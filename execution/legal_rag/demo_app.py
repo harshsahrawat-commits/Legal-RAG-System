@@ -15,8 +15,11 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-# Set Docling artifacts path to a writable directory for cloud deployment
-os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp"
+# Set ALL possible AI cache paths to a writable directory for cloud deployment
+os.environ["HF_HOME"] = "/tmp/huggingface"
+os.environ["MODELSCOPE_CACHE"] = "/tmp/modelscope"
+os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp/docling"
+os.environ["XDG_CACHE_HOME"] = "/tmp/cache"
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))

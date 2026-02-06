@@ -6,8 +6,11 @@ Preserves legal document structure: articles, clauses, sections, appendices.
 """
 
 import os
-# Set Docling artifacts path to a writable directory for cloud deployment
-os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp"
+# Set ALL possible AI cache paths to a writable directory for cloud deployment
+os.environ["HF_HOME"] = "/tmp/huggingface"
+os.environ["MODELSCOPE_CACHE"] = "/tmp/modelscope"
+os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp/docling"
+os.environ["XDG_CACHE_HOME"] = "/tmp/cache"
 import re
 import uuid
 import logging
@@ -143,11 +146,25 @@ class LegalDocumentParser:
         # Try to import extraction libraries
         try:
             from docling.document_converter import DocumentConverter
-            self._docling_converter = DocumentConverter()
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.base_models import InputFormat
+
+            # Configure pipeline to be cloud-safe (No OCR by default to avoid permission errors)
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = True
+            pipeline_options.artifacts_path = "/tmp/docling"
+
+            self._docling_converter = DocumentConverter(
+                allowed_formats=[InputFormat.PDF],
+                format_options={
+                    InputFormat.PDF: pipeline_options
+                }
+            )
             self._docling_available = True
-            logger.info("Docling initialized successfully")
-        except ImportError:
-            logger.warning("Docling not available, will try PyMuPDF")
+            logger.info("Docling initialized successfully (OCR disabled for cloud stability)")
+        except Exception as e:
+            logger.warning(f"Docling initialization failed: {e}, falling back to PyMuPDF")
 
         try:
             import pymupdf4llm
