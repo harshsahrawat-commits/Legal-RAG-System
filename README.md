@@ -98,7 +98,7 @@ User Query: "What is the annual license fee?"
 |-----------|------------|---------|
 | **Language** | Python 3.14 | Core implementation |
 | **Vector DB** | PostgreSQL 17 + pgvector | Document & embedding storage |
-| **Embeddings** | Cohere embed-v3 (1024 dims) | Semantic search vectors |
+| **Embeddings** | Voyage AI voyage-law-2 (1024 dims) | Legal-optimized semantic search (6-10% better on legal benchmarks) |
 | **Reranking** | Cohere rerank-v3 | Precision improvement |
 | **LLM** | NVIDIA NIM (Llama 3.1 70B) | Answer generation |
 | **Frontend** | Streamlit | Demo web interface |
@@ -147,7 +147,8 @@ cp .env.template .env
 ```
 
 Required keys:
-- `COHERE_API_KEY` - Get from [Cohere Dashboard](https://dashboard.cohere.com/api-keys)
+- `VOYAGE_API_KEY` - Get from [Voyage AI Dashboard](https://dash.voyageai.com/) (free tier available)
+- `COHERE_API_KEY` - Get from [Cohere Dashboard](https://dashboard.cohere.com/api-keys) (for reranking)
 - `NVIDIA_API_KEY` - Get from [NVIDIA NIM](https://build.nvidia.com/)
 - `POSTGRES_URL` - Your PostgreSQL connection string
 
@@ -335,7 +336,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- **Cohere** for embeddings and reranking APIs
+- **Voyage AI** for `voyage-law-2` legal-optimized embeddings
+- **Cohere** for reranking API
 - **NVIDIA NIM** for Llama 3.1 70B inference
 - **LlamaIndex** for RAG framework
 - **pgvector** for vector similarity search
