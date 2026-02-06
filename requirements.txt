@@ -15,6 +15,7 @@ llama-index-embeddings-cohere>=0.2.0
 
 # Embeddings & Reranking
 cohere>=5.0.0
+voyageai>=0.2.0
 
 # Vector Database
 psycopg2-binary>=2.9.0
