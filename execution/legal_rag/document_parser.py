@@ -145,7 +145,7 @@ class LegalDocumentParser:
 
         # Try to import extraction libraries
         try:
-            from docling.document_converter import DocumentConverter
+            from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.datamodel.base_models import InputFormat
 
@@ -158,7 +158,7 @@ class LegalDocumentParser:
             self._docling_converter = DocumentConverter(
                 allowed_formats=[InputFormat.PDF],
                 format_options={
-                    InputFormat.PDF: pipeline_options
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
                 }
             )
             self._docling_available = True
