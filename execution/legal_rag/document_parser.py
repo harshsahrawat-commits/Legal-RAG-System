@@ -144,16 +144,17 @@ class LegalDocumentParser:
         self._pymupdf_available = False
 
         # Try to import extraction libraries
+        # Try to import extraction libraries
         try:
             from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.datamodel.base_models import InputFormat
 
-            # Configure pipeline to be cloud-safe (No OCR by default to avoid permission errors)
+            # Configure pipeline for maximum stability
             pipeline_options = PdfPipelineOptions()
             pipeline_options.do_ocr = False
             pipeline_options.do_table_structure = True
-            pipeline_options.artifacts_path = "/tmp/docling"
+            # Let Docling handle its own paths via the env vars we set at the top
 
             self._docling_converter = DocumentConverter(
                 allowed_formats=[InputFormat.PDF],
@@ -162,9 +163,10 @@ class LegalDocumentParser:
                 }
             )
             self._docling_available = True
-            logger.info("Docling initialized successfully (OCR disabled for cloud stability)")
+            logger.info("Docling initialized successfully")
         except Exception as e:
-            logger.warning(f"Docling initialization failed: {e}, falling back to PyMuPDF")
+            logger.warning(f"Docling initialization failed: {e}. Will use PyMuPDF fallback.")
+            self._docling_available = False
 
         try:
             import pymupdf4llm
@@ -240,28 +242,29 @@ class LegalDocumentParser:
         Extract content using Docling.
 
         Returns:
-            tuple: (markdown, page_count, page_ranges)
-                page_ranges is a list of (page_num, start_char, end_char) tuples
+        Extract content using Docling with safety fallback.
         """
-        from docling.document_converter import DocumentConverter
+        try:
+            result = self._docling_converter.convert(file_path)
+            markdown = result.document.export_to_markdown()
 
-        result = self._docling_converter.convert(file_path)
-        markdown = result.document.export_to_markdown()
+            # Get page count from result
+            page_count = len(result.document.pages) if hasattr(result.document, 'pages') else 0
 
-        # Get page count from result
-        page_count = len(result.document.pages) if hasattr(result.document, 'pages') else 0
+            # Docling doesn't provide easy character-to-page mapping, so estimate evenly
+            # This is a rough approximation - for better accuracy, use PyMuPDF
+            page_ranges = []
+            if page_count > 0:
+                chars_per_page = len(markdown) // page_count
+                for page_num in range(page_count):
+                    start = page_num * chars_per_page
+                    end = (page_num + 1) * chars_per_page if page_num < page_count - 1 else len(markdown)
+                    page_ranges.append((page_num + 1, start, end))
 
-        # Docling doesn't provide easy character-to-page mapping, so estimate evenly
-        # This is a rough approximation - for better accuracy, use PyMuPDF
-        page_ranges = []
-        if page_count > 0:
-            chars_per_page = len(markdown) // page_count
-            for page_num in range(page_count):
-                start = page_num * chars_per_page
-                end = (page_num + 1) * chars_per_page if page_num < page_count - 1 else len(markdown)
-                page_ranges.append((page_num + 1, start, end))
-
-        return markdown, page_count, page_ranges
+            return markdown, page_count, page_ranges
+        except Exception as e:
+            logger.error(f"Docling runtime failure: {e}. Falling back to PyMuPDF.")
+            return self._extract_with_pymupdf(file_path)
 
     def _extract_with_pymupdf(self, file_path: str) -> tuple[str, int, list[tuple[int, int, int]]]:
         """
