@@ -339,7 +339,7 @@ def query_documents(query: str, document_id: str = None) -> dict:
 
     # Build context for LLM
     context = "\n\n---\n\n".join([
-        f"**Source {i+1}** {cc.citation.short_format()}:\n{cc.content}"
+        f"**[{i+1}]** {cc.citation.short_format()}:\n{cc.content}"
         for i, cc in enumerate(cited_contents)
     ])
 
@@ -358,11 +358,12 @@ def query_documents(query: str, document_id: str = None) -> dict:
         system_prompt = """You are a legal research assistant. Answer the question based ONLY on the provided sources.
 
 REQUIREMENTS:
-1. Every claim must cite a source using the format [Source N]
-2. If information is not in the sources, say "This information is not in the provided documents"
-3. Be precise and accurate - this is for legal work
-4. Quote exact language when relevant, using quotation marks
-5. Note any limitations or caveats"""
+1. Every claim must cite a source using the format [N] (e.g. [1], [2])
+2. Group citations when possible (e.g. [1, 2])
+3. If information is not in the sources, say "This information is not in the provided documents"
+4. Be precise and accurate - this is for legal work
+5. Quote exact language when relevant, using quotation marks
+6. Note any limitations or caveats"""
 
         generation_start = time.time()
         response = client.chat.completions.create(
@@ -488,8 +489,8 @@ def render_chat():
 
                 if msg.get("sources") and st.session_state.show_sources:
                     with st.expander("📚 Sources"):
-                        for source in msg["sources"]:
-                            st.markdown(f"- {source['long_citation']}")
+                        for i, source in enumerate(msg["sources"]):
+                            st.markdown(f"**[{i+1}]** {source['long_citation']}")
 
     # Query input
     query = st.chat_input("Ask a question about your documents...")
@@ -518,8 +519,8 @@ def render_chat():
 
             if result["sources"] and st.session_state.show_sources:
                 with st.expander("📚 Sources"):
-                    for source in result["sources"]:
-                        st.markdown(f"- {source['long_citation']}")
+                    for i, source in enumerate(result["sources"]):
+                        st.markdown(f"**[{i+1}]** {source['long_citation']}")
 
         # Add to history
         st.session_state.chat_history.append({

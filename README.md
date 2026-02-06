@@ -35,14 +35,38 @@ this agreement with 30 days written notice...
 | 📝 **Citation Extraction** | Exact section and page references in multiple formats |
 | 🔄 **Query Enhancement** | Auto-expands queries with legal terminology (HyDE, Query Expansion) |
 | 🏢 **Multi-Tenant Ready** | Row-Level Security for client data isolation |
-| 💾 **Document Persistence** | Uploaded documents survive app restarts |
-| 📈 **Production Features** | Connection pooling, smart reranking, metrics collection |
+| 🧠 **Contextual Chunking** | LLM-generated context prepended to every chunk to improve retrieval |
+| 🛡️ **Robust Data Cleaning** | Automated removal of OCR artifacts (GLYPH, garbage titles) |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
+                          ┌─────────────────────────────────────┐
+                          │           INGESTION PIPELINE          │
+                          └─────────────────────────────────────┘
+                                           │
+                                           ▼
+┌─────────────────┐       ┌───────────────────────────────┐
+│  Data Cleaning  │ ──►   │ OCR Correction & Title Fixes  │
+└────────┬────────┘       └───────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Parsing &     │ ──►   Hierarchical Structure (Section/Clause)
+│    Chunking     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐       ┌───────────────────────────────┐
+│   Contextual    │ ──►   │ "Contextual Chunking" (LLM)   │
+│    Chunking     │       │ Prepend document context to   │
+└────────┬────────┘       │ every chunk for <lost context>│
+         │                └───────────────────────────────┘
+         ▼
+    [Vector Store]
+
                           ┌─────────────────────────────────────┐
                           │           QUERY PIPELINE            │
                           └─────────────────────────────────────┘
@@ -86,7 +110,7 @@ User Query: "What is the annual license fee?"
                    ▼
        ┌─────────────────────────┐
        │  Answer with Citations  │
-       │  "According to [1]..."  │
+       │  "According to [1, 2].."│
        └─────────────────────────┘
 ```
 

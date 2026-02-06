@@ -40,4 +40,4 @@ token.json
 
 # Test files (large PDFs)
 # Uncomment if you don't want to include test documents
-# test_files/
+test_files/

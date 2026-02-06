@@ -13,6 +13,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
+import html
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,16 @@ class LegalDocumentParser:
         text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # Links
         text = re.sub(r'`([^`]+)`', r'\1', text)  # Code
         text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', text)  # Images
+        
+        # Clean OCR artifacts
+        text = re.sub(r'GLYPH&lt;\d+&gt;', '', text)  # HTML encoded GLYPH
+        text = re.sub(r'GLYPH<\d+>', '', text)  # Raw GLYPH
+        text = re.sub(r'<!--.*?-->', '', text)  # HTML comments/placeholders
+        text = re.sub(r'\[image\]', '', text, flags=re.IGNORECASE)
+        
+        # Unescape HTML entities (e.g. &amp; -> &)
+        text = html.unescape(text)
+        
         return text.strip()
 
     def _detect_document_type(self, text: str) -> str:
@@ -310,10 +321,30 @@ class LegalDocumentParser:
 
         # Look for title-like first line (all caps or mixed case, no period)
         lines = markdown.strip().split('\n')
-        for line in lines[:5]:
+        for line in lines[:8]:  # Check first 8 lines
             line = line.strip()
-            if line and not line.endswith('.') and len(line) < 200:
-                return line
+            # Remove markdown chars for validation
+            clean_line = re.sub(r'[#*`]', '', line).strip()
+            
+            if not clean_line or len(clean_line) < 3 or len(clean_line) > 200:
+                continue
+                
+            # Heuristics for valid legal title:
+            # 1. Mostly letters (avoid "123.456")
+            # 2. Contains spaces (avoid "wesruefr,rodffif")
+            # 3. No excessive punctuation
+            
+            letter_count = len(re.findall(r'[a-zA-Z]', clean_line))
+            if letter_count / len(clean_line) < 0.4:
+                continue
+                
+            if ' ' not in clean_line and len(clean_line) > 20: # Long string with no spaces is suspicious
+                continue
+
+            if clean_line.endswith('.'):
+                continue
+                
+            return clean_line
 
         return fallback
 

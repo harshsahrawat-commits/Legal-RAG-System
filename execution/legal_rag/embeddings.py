@@ -11,7 +11,7 @@ import os
 import json
 import hashlib
 import logging
-from typing import Optional
+from typing import Optional, Union
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -477,7 +477,7 @@ class LocalEmbeddingService:
 def get_embedding_service(
     provider: str = "voyage",
     use_local: bool = False
-) -> VoyageEmbeddingService | EmbeddingService | LocalEmbeddingService:
+) -> Union[VoyageEmbeddingService, EmbeddingService, LocalEmbeddingService]:
     """
     Factory function to get appropriate embedding service.
 
