@@ -15,6 +15,9 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
+# Set Docling artifacts path to a writable directory for cloud deployment
+os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp"
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 

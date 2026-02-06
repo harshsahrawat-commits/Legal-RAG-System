@@ -6,6 +6,8 @@ Preserves legal document structure: articles, clauses, sections, appendices.
 """
 
 import os
+# Set Docling artifacts path to a writable directory for cloud deployment
+os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp"
 import re
 import uuid
 import logging
