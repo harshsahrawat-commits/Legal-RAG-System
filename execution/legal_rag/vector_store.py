@@ -153,12 +153,38 @@ class VectorStore:
     def _get_connection(self):
         """Get a database connection (from pool or single connection)."""
         if self._pool:
-            conn = self._pool.getconn()
-            # Set tenant context if we have one
-            if self._current_tenant:
+            try:
+                conn = self._pool.getconn()
+                # Check if connection is actually alive
                 with conn.cursor() as cur:
-                    cur.execute("SET app.current_tenant = %s", (self._current_tenant,))
-            return conn
+                    cur.execute("SELECT 1")
+                
+                # Set tenant context if we have one
+                if self._current_tenant:
+                    with conn.cursor() as cur:
+                        cur.execute("SET app.current_tenant = %s", (self._current_tenant,))
+                return conn
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                logger.warning("Connection from pool is dead, attempting to re-establish...")
+                try:
+                    self.connect()
+                    return self._pool.getconn()
+                except Exception as e:
+                    logger.error(f"Failed to re-establish connection pool: {e}")
+                    raise
+        
+        # For single connection mode, check and reconnect if needed
+        if self._conn:
+            try:
+                if self._conn.closed:
+                    self.connect()
+                else:
+                    with self._conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                logger.warning("Connection died, reconnecting...")
+                self.connect()
+        
         return self._conn
 
     def _release_connection(self, conn):
@@ -170,7 +196,13 @@ class VectorStore:
         """Ensure we have a connection (pool or single) and return it."""
         if not self._conn and not self._pool:
             self.connect()
-        return self._get_connection()
+        
+        try:
+            return self._get_connection()
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            logger.warning("Database error in _ensure_connection, retrying after reconnect...")
+            self.connect()
+            return self._get_connection()
 
     def _is_connected(self) -> bool:
         """Check if we have an active connection (pool or single)."""
