@@ -139,7 +139,16 @@ class LegalDocumentParser:
             use_docling: Whether to use Docling for PDF extraction.
                         Falls back to PyMuPDF if Docling unavailable.
         """
-        self.use_docling = use_docling
+        # Detect if we are running on Streamlit Cloud
+        self.is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV") is not None or os.environ.get("HOSTNAME", "").endswith(".streamlit.app")
+        
+        # On cloud, default to PyMuPDF for stability unless explicitly forced
+        if self.is_cloud:
+            logger.info("Running on Streamlit Cloud: Defaulting to PyMuPDF for stability")
+            self.use_docling = False
+        else:
+            self.use_docling = use_docling
+
         self._docling_available = False
         self._pymupdf_available = False
 
