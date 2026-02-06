@@ -1,0 +1,43 @@
+# Environment variables (CRITICAL - contains API keys)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Temporary files
+.tmp/
+*.log
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Credentials (OAuth tokens)
+credentials.json
+token.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test files (large PDFs)
+# Uncomment if you don't want to include test documents
+# test_files/
