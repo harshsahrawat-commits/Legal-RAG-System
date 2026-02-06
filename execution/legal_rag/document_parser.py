@@ -131,64 +131,35 @@ class LegalDocumentParser:
         ],
     }
 
-    def __init__(self, use_docling: bool = True):
+    def __init__(self, use_docling: bool = False):
         """
         Initialize the parser.
-
-        Args:
-            use_docling: Whether to use Docling for PDF extraction.
-                        Falls back to PyMuPDF if Docling unavailable.
         """
-        # Detect if we are running on Streamlit Cloud
         self.is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV") is not None or os.environ.get("HOSTNAME", "").endswith(".streamlit.app")
+        self.use_docling = False # Force false for stability
         
-        # On cloud, default to PyMuPDF for stability unless explicitly forced
-        if self.is_cloud:
-            logger.info("Running on Streamlit Cloud: Defaulting to PyMuPDF for stability")
-            self.use_docling = False
-        else:
-            self.use_docling = use_docling
-
         self._docling_available = False
         self._pymupdf_available = False
 
-        # Try to import extraction libraries
-        # Try to import extraction libraries
-        try:
-            from docling.document_converter import DocumentConverter, PdfFormatOption
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
-            from docling.datamodel.base_models import InputFormat
-
-            # Configure pipeline for maximum stability
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = False
-            pipeline_options.do_table_structure = True
-            # Let Docling handle its own paths via the env vars we set at the top
-
-            self._docling_converter = DocumentConverter(
-                allowed_formats=[InputFormat.PDF],
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-                }
-            )
-            self._docling_available = True
-            logger.info("Docling initialized successfully")
-        except Exception as e:
-            logger.warning(f"Docling initialization failed: {e}. Will use PyMuPDF fallback.")
-            self._docling_available = False
-
+        # Try PyMuPDF (Primary)
         try:
             import pymupdf4llm
             self._pymupdf_available = True
-            logger.info("PyMuPDF4LLM available as fallback")
+            logger.info("PyMuPDF4LLM initialized successfully")
         except ImportError:
             logger.warning("PyMuPDF4LLM not available")
 
-        if not self._docling_available and not self._pymupdf_available:
-            raise ImportError(
-                "Neither Docling nor PyMuPDF available. "
-                "Install with: pip install docling pymupdf4llm"
-            )
+        # Optional Docling check (Secondary/Legacy)
+        try:
+            from docling.document_converter import DocumentConverter
+            if not self.is_cloud: # Never use heavy docling on cloud
+                self._docling_available = True
+                logger.info("Docling available (Legacy)")
+        except ImportError:
+            pass
+
+        if not self._pymupdf_available and not self._docling_available:
+            raise ImportError("No PDF parsing library available (pymupdf4llm is required).")
 
     def parse(self, file_path: str, client_id: Optional[str] = None) -> ParsedDocument:
         """
