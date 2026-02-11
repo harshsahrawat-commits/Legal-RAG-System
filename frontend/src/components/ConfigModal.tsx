@@ -13,25 +13,32 @@ export default function ConfigModal({ open, onClose }: Props) {
   const [language, setLanguage] = useState('en')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     if (!open) return
+    setLoadError(false)
+    setError('')
     api.config.get().then(({ data }) => {
       setConfig(data)
       setLanguage(data.language)
+    }).catch(() => {
+      setLoadError(true)
     })
   }, [open])
 
   const handleSave = async () => {
     setSaving(true)
     setSaved(false)
+    setError('')
     try {
       const { data } = await api.config.update({ language })
       setConfig(data)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch {
-      /* ignore */
+      setError('Failed to save settings. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -50,7 +57,11 @@ export default function ConfigModal({ open, onClose }: Props) {
           </button>
         </div>
 
-        {config ? (
+        {loadError ? (
+          <div style={styles.loading}>
+            <span style={{ color: 'var(--danger)', fontSize: 13 }}>Failed to load settings</span>
+          </div>
+        ) : config ? (
           <div style={styles.body}>
             <div style={styles.field}>
               <label style={styles.label}>Language</label>
@@ -80,6 +91,12 @@ export default function ConfigModal({ open, onClose }: Props) {
               <input value={config.fts_language} readOnly style={styles.readOnly} />
             </div>
 
+            {error && (
+              <div style={{ color: 'var(--danger)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>{error}</span>
+              </div>
+            )}
+
             <button onClick={handleSave} disabled={saving} style={styles.saveBtn}>
               {saving ? (
                 <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
@@ -97,7 +114,6 @@ export default function ConfigModal({ open, onClose }: Props) {
         )}
       </div>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </>
   )
 }

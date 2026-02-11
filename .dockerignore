@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Frontend (built and served separately via Cloudflare Pages)
+frontend/
+
+# Python cache
+__pycache__
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Testing
+tests/
+pytest.ini
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment & secrets
+.env
+credentials.json
+token.json
+
+# Temporary files
+.tmp/
+*.log
+*.tmp
+test_files/
+
+# Documentation
+*.md
+!execution/legal_rag/README.md
+directives/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude/AI
+.claude/
+
+# Dev container
+.devcontainer/
+
+# Streamlit (not used in production API)
+.streamlit/

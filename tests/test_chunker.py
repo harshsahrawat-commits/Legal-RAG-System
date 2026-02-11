@@ -122,7 +122,7 @@ class TestLegalChunkerTokenEstimation:
 
     def test_estimate_tokens(self, chunker):
         assert chunker._estimate_tokens("a" * 400) == 100
-        assert chunker._estimate_tokens("") == 0
+        assert chunker._estimate_tokens("") == 1  # min 1 to prevent division by zero
 
     def test_token_counts_match(self, chunker, sample_parsed_document):
         """Each chunk's token_count should be close to the estimate of its content."""

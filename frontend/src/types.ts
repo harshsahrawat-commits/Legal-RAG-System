@@ -62,10 +62,12 @@ export interface HealthResponse {
 }
 
 export interface ChatMessage {
+  id: string
   role: 'user' | 'assistant'
   content: string
   sources?: SourceInfo[]
   latency_ms?: number
+  isError?: boolean
 }
 
 export interface ParsedPart {

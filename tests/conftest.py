@@ -309,13 +309,13 @@ class MockVectorStore:
     def delete_document(self, document_id, client_id=None):
         deleted = document_id in self._documents
         self._documents.pop(document_id, None)
-        return deleted
         to_remove = [
             k for k, v in self._chunks.items()
             if v.get("document_id") == document_id
         ]
         for k in to_remove:
             del self._chunks[k]
+        return deleted
 
     def set_tenant_context(self, client_id):
         self._current_tenant = client_id

@@ -1,4 +1,4 @@
-import { Scale, Settings, LogOut } from 'lucide-react'
+import { Scale, Settings, LogOut, Trash2 } from 'lucide-react'
 import { useStore } from '../store'
 
 interface HeaderProps {
@@ -7,6 +7,8 @@ interface HeaderProps {
 
 export default function Header({ onSettingsClick }: HeaderProps) {
   const logout = useStore((s) => s.logout)
+  const clearMessages = useStore((s) => s.clearMessages)
+  const hasMessages = useStore((s) => s.messages.length > 0)
 
   return (
     <header style={styles.header}>
@@ -15,10 +17,15 @@ export default function Header({ onSettingsClick }: HeaderProps) {
         <span style={styles.brand}>Legal RAG</span>
       </div>
       <div style={styles.right}>
-        <button onClick={onSettingsClick} style={styles.iconBtn} title="Settings">
+        {hasMessages && (
+          <button onClick={clearMessages} style={styles.iconBtn} title="Clear chat" aria-label="Clear chat">
+            <Trash2 size={18} />
+          </button>
+        )}
+        <button onClick={onSettingsClick} style={styles.iconBtn} title="Settings" aria-label="Settings">
           <Settings size={18} />
         </button>
-        <button onClick={logout} style={styles.iconBtn} title="Sign out">
+        <button onClick={logout} style={styles.iconBtn} title="Sign out" aria-label="Sign out">
           <LogOut size={18} />
         </button>
       </div>

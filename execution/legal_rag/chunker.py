@@ -597,7 +597,7 @@ class LegalChunker:
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count using language-appropriate chars_per_token ratio."""
-        return len(text) // self._language_config.chars_per_token
+        return max(1, len(text) // self._language_config.chars_per_token)
 
     def contextualize_chunks(
         self,

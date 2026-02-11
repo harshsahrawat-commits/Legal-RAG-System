@@ -120,11 +120,13 @@ class TestEmbeddingServiceCaching:
         assert key_q != key_d
 
     def test_memory_cache_set_and_get(self):
+        from collections import OrderedDict
         from execution.legal_rag.embeddings import EmbeddingService, EmbeddingConfig
 
         svc = EmbeddingService.__new__(EmbeddingService)
         svc.config = EmbeddingConfig(use_cache=True)
-        svc._cache = {}
+        svc._cache = OrderedDict()
+        svc._max_cache_size = 10000
         svc._cache_path = None
 
         svc._set_cached("key1", [1.0, 2.0, 3.0])
@@ -142,18 +144,20 @@ class TestEmbeddingServiceCaching:
         assert svc._get_cached("key1") is None
 
     def test_file_cache_write_and_read(self, tmp_path):
+        from collections import OrderedDict
         from execution.legal_rag.embeddings import EmbeddingService, EmbeddingConfig
 
         svc = EmbeddingService.__new__(EmbeddingService)
         svc.config = EmbeddingConfig(use_cache=True, cache_dir=str(tmp_path))
-        svc._cache = {}
+        svc._cache = OrderedDict()
+        svc._max_cache_size = 10000
         svc._cache_path = tmp_path
 
         embedding = [0.1, 0.2, 0.3]
         svc._set_cached("mykey", embedding)
 
         # Clear memory cache to force file read
-        svc._cache = {}
+        svc._cache = OrderedDict()
         result = svc._get_cached("mykey")
         assert result == embedding
 

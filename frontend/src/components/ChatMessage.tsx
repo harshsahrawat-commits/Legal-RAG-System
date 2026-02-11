@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect } from 'react'
-import { User, Bot, Clock } from 'lucide-react'
+import { User, Bot, Clock, Copy, Check, AlertCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage as ChatMessageType, SourceInfo } from '../types'
@@ -47,6 +47,8 @@ function CitationBadge({
       onMouseLeave={() => setHover(false)}
       role="button"
       tabIndex={0}
+      onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && valid) { e.preventDefault(); onClick() } }}
+      aria-label={valid && source ? `Citation ${num}: ${source.section || source.document_title}` : `Citation ${num}`}
     >
       [{num}]
       {hover && valid && source && (
@@ -119,6 +121,14 @@ const badgeStyles: Record<string, React.CSSProperties> = {
 export default function ChatMessage({ message }: Props) {
   const openSourcePanel = useStore((s) => s.openSourcePanel)
   const isUser = message.role === 'user'
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(message.content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
 
   const parts = useMemo(
     () => (isUser ? null : parseCitations(message.content)),
@@ -139,7 +149,7 @@ export default function ChatMessage({ message }: Props) {
     if (!parts) return null
 
     // Check if the content has any markdown formatting
-    const hasMarkdown = /[*_#`|>\-\d+\.]/.test(message.content)
+    const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)
 
     if (!hasMarkdown) {
       // Plain text with citations
@@ -194,7 +204,7 @@ export default function ChatMessage({ message }: Props) {
       <div
         style={{
           ...styles.bubble,
-          background: isUser ? 'var(--bg-3)' : 'var(--bg-2)',
+          background: message.isError ? 'var(--danger-dim, rgba(239,68,68,0.12))' : isUser ? 'var(--bg-3)' : 'var(--bg-2)',
           borderBottomRightRadius: isUser ? 4 : 'var(--radius-md)',
           borderBottomLeftRadius: isUser ? 'var(--radius-md)' : 4,
           maxWidth: isUser ? '70%' : '80%',
@@ -202,15 +212,29 @@ export default function ChatMessage({ message }: Props) {
       >
         {isUser ? (
           <p style={styles.text}>{message.content}</p>
+        ) : message.isError ? (
+          <div style={{ ...styles.text, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+            <AlertCircle size={16} color="var(--danger)" style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>{message.content}</span>
+          </div>
         ) : (
           renderAssistantContent()
         )}
-        {!isUser && message.latency_ms != null && (
+        {!isUser && (
           <div style={styles.meta}>
-            <Clock size={12} />
-            <span>{(message.latency_ms / 1000).toFixed(1)}s</span>
+            {message.latency_ms != null && (
+              <>
+                <Clock size={12} />
+                <span>{(message.latency_ms / 1000).toFixed(1)}s</span>
+              </>
+            )}
             {message.sources && message.sources.length > 0 && (
-              <span>&middot; {message.sources.length} source{message.sources.length > 1 ? 's' : ''}</span>
+              <span>{message.latency_ms != null && <>&middot; </>}{message.sources.length} source{message.sources.length > 1 ? 's' : ''}</span>
+            )}
+            {!message.isError && (
+              <button onClick={handleCopy} style={styles.copyBtn} title="Copy answer">
+                {copied ? <Check size={12} color="var(--success)" /> : <Copy size={12} />}
+              </button>
             )}
           </div>
         )}
@@ -360,5 +384,16 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 8,
     fontSize: 12,
     color: 'var(--text-3)',
+  },
+  copyBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 24,
+    height: 24,
+    borderRadius: 'var(--radius-sm, 4px)',
+    color: 'var(--text-3)',
+    marginLeft: 'auto',
+    cursor: 'pointer',
   },
 }

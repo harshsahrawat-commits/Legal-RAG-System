@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, Loader2, MessageSquare, Sparkles } from 'lucide-react'
 import { api } from '../api'
-import type { ChatMessage as ChatMessageType } from '../types'
 import ChatMessage from './ChatMessage'
 import { useStore } from '../store'
 
@@ -67,8 +66,13 @@ const skeletonStyles: Record<string, React.CSSProperties> = {
   },
 }
 
+let _msgCounter = 0
+function nextId() { return `msg-${Date.now()}-${++_msgCounter}` }
+
 export default function ChatInterface() {
-  const [messages, setMessages] = useState<ChatMessageType[]>([])
+  const messages = useStore((s) => s.messages)
+  const setMessages = useStore((s) => s.setMessages)
+  const selectedDocumentId = useStore((s) => s.selectedDocumentId)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
@@ -82,35 +86,45 @@ export default function ChatInterface() {
     }
   }, [messages])
 
-  const handleSubmit = async (e?: React.FormEvent) => {
-    e?.preventDefault()
-    const query = input.trim()
+  const submitQuery = useCallback(async (query: string) => {
     if (!query || loading) return
 
     setInput('')
-    setMessages((prev) => [...prev, { role: 'user', content: query }])
+    setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: query }])
     setLoading(true)
 
     try {
-      const { data } = await api.query(query)
+      const { data } = await api.query(query, selectedDocumentId ?? undefined)
       setMessages((prev) => [
         ...prev,
         {
+          id: nextId(),
           role: 'assistant',
           content: data.answer,
           sources: data.sources,
           latency_ms: data.latency_ms,
         },
       ])
-    } catch {
+    } catch (err: unknown) {
+      let errorMsg = 'Sorry, something went wrong. Please try again.'
+      if (err && typeof err === 'object' && 'response' in err) {
+        const response = (err as { response?: { status?: number } }).response
+        if (response?.status === 429) errorMsg = 'Rate limit exceeded. Please wait a moment and try again.'
+        else if (response?.status === 401) errorMsg = 'Session expired. Please log in again.'
+      }
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' },
+        { id: nextId(), role: 'assistant', content: errorMsg, isError: true },
       ])
     } finally {
       setLoading(false)
       inputRef.current?.focus()
     }
+  }, [loading, selectedDocumentId, setMessages])
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault()
+    submitQuery(input.trim())
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -143,32 +157,7 @@ export default function ChatInterface() {
   }, [handleGlobalKey])
 
   const handleSuggestionClick = (question: string) => {
-    setInput(question)
-    // Auto-submit
-    setTimeout(() => {
-      setInput('')
-      setMessages((prev) => [...prev, { role: 'user', content: question }])
-      setLoading(true)
-      api.query(question).then(({ data }) => {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: data.answer,
-            sources: data.sources,
-            latency_ms: data.latency_ms,
-          },
-        ])
-      }).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' },
-        ])
-      }).finally(() => {
-        setLoading(false)
-        inputRef.current?.focus()
-      })
-    }, 50)
+    submitQuery(question)
   }
 
   return (
@@ -200,8 +189,8 @@ export default function ChatInterface() {
             </div>
           </div>
         )}
-        {messages.map((msg, i) => (
-          <ChatMessage key={i} message={msg} />
+        {messages.map((msg) => (
+          <ChatMessage key={msg.id} message={msg} />
         ))}
         {loading && <SkeletonLoader />}
       </div>
@@ -210,7 +199,12 @@ export default function ChatInterface() {
         <textarea
           ref={inputRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value)
+            const el = e.target
+            el.style.height = 'auto'
+            el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+          }}
           onKeyDown={handleKeyDown}
           placeholder="Ask a question about your documents...  (press / to focus)"
           rows={1}
@@ -228,14 +222,12 @@ export default function ChatInterface() {
           {loading ? <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={18} />}
         </button>
       </form>
+      {input.length > 0 && (
+        <div style={styles.charCount}>
+          {input.length}/2000
+        </div>
+      )}
 
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes shimmer {
-          0%, 100% { opacity: 0.4; }
-          50% { opacity: 0.7; }
-        }
-      `}</style>
     </div>
   )
 }
@@ -347,5 +339,12 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     flexShrink: 0,
     transition: 'opacity var(--transition)',
+  },
+  charCount: {
+    textAlign: 'right' as const,
+    fontSize: 11,
+    color: 'var(--text-3)',
+    padding: '0 24px 4px',
+    marginTop: -8,
   },
 }

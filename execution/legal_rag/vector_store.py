@@ -162,14 +162,15 @@ class VectorStore:
             raise
 
     def _get_connection(self):
-        """Get a database connection (from pool or single connection)."""
+        """Get a database connection (from pool or single connection).
+
+        Uses lazy connection checking — only reconnects when the connection
+        is known to be closed, avoiding a SELECT 1 round-trip on every call.
+        Stale connections are caught by _ensure_connection's retry logic.
+        """
         if self._pool:
             try:
                 conn = self._pool.getconn()
-                # Check if connection is actually alive
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                
                 # Set tenant context if we have one
                 if self._current_tenant:
                     with conn.cursor() as cur:
@@ -183,19 +184,12 @@ class VectorStore:
                 except Exception as e:
                     logger.error(f"Failed to re-establish connection pool: {e}")
                     raise
-        
-        # For single connection mode, check and reconnect if needed
-        if self._conn:
-            try:
-                if self._conn.closed:
-                    self.connect()
-                else:
-                    with self._conn.cursor() as cur:
-                        cur.execute("SELECT 1")
-            except (psycopg2.OperationalError, psycopg2.InterfaceError):
-                logger.warning("Connection died, reconnecting...")
-                self.connect()
-        
+
+        # For single connection mode, only reconnect if connection is closed
+        if self._conn and self._conn.closed:
+            logger.warning("Connection closed, reconnecting...")
+            self.connect()
+
         return self._conn
 
     def _release_connection(self, conn):
@@ -626,10 +620,15 @@ class VectorStore:
         CREATE INDEX IF NOT EXISTS idx_chunks_client_document
             ON {self.config.table_name}(client_id, document_id);
 
-        -- Full-text search index for BM25-style keyword search
+        -- Full-text search index for BM25-style keyword search (English)
         CREATE INDEX IF NOT EXISTS idx_chunks_content_fts
             ON {self.config.table_name}
             USING GIN (to_tsvector('english', content));
+
+        -- Full-text search index for Greek content (multilingual support)
+        CREATE INDEX IF NOT EXISTS idx_chunks_fts_greek
+            ON {self.config.table_name}
+            USING GIN (to_tsvector('greek', content));
 
         -- Index for paragraph range queries
         CREATE INDEX IF NOT EXISTS idx_chunks_paragraphs
@@ -1076,9 +1075,9 @@ class VectorStore:
             paragraph_end,
             original_paragraph_numbers,
             level,
-            ts_rank(to_tsvector(%s, content), plainto_tsquery(%s, %s)) as score
+            ts_rank(to_tsvector(%s, content), websearch_to_tsquery(%s, %s)) as score
         FROM {self.config.table_name}
-        WHERE to_tsvector(%s, content) @@ plainto_tsquery(%s, %s)
+        WHERE to_tsvector(%s, content) @@ websearch_to_tsquery(%s, %s)
         {where_extra}
         ORDER BY score DESC
         LIMIT %s

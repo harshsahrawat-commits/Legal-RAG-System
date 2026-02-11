@@ -94,6 +94,25 @@ a {
   text-decoration: none;
 }
 
+/* Shared keyframes */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+/* Hover utilities (inline styles can't do :hover) */
+button:hover {
+  opacity: 0.85;
+}
+
+button:active {
+  opacity: 0.7;
+}
+
 /* Utility classes */
 .sr-only {
   position: absolute;

@@ -23,13 +23,17 @@ export default function Sidebar() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<SortBy>('date')
   const [collapsed, setCollapsed] = useState(false)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [loadingDocs, setLoadingDocs] = useState(true)
 
   const loadDocs = useCallback(async () => {
     try {
       const { data } = await api.documents.list()
       setDocuments(data)
     } catch {
-      /* ignore */
+      setError('Failed to load documents')
+    } finally {
+      setLoadingDocs(false)
     }
   }, [])
 
@@ -93,6 +97,12 @@ export default function Sidebar() {
   }
 
   const handleDelete = async (id: string) => {
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id)
+      setTimeout(() => setConfirmDeleteId((cur) => (cur === id ? null : cur)), 3000)
+      return
+    }
+    setConfirmDeleteId(null)
     try {
       await api.documents.delete(id)
       setDocuments((prev) => prev.filter((d) => d.id !== id))
@@ -170,7 +180,7 @@ export default function Sidebar() {
             accept=".pdf"
             multiple
             style={{ display: 'none' }}
-            onChange={(e) => handleUpload(e.target.files)}
+            onChange={(e) => { handleUpload(e.target.files); e.target.value = '' }}
           />
         </div>
         {error && (
@@ -206,7 +216,10 @@ export default function Sidebar() {
         </div>
 
         <div style={styles.docList}>
-          {filteredAndSorted.length === 0 && documents.length === 0 && (
+          {loadingDocs && (
+            <p style={styles.emptyText}>Loading documents...</p>
+          )}
+          {!loadingDocs && filteredAndSorted.length === 0 && documents.length === 0 && (
             <p style={styles.emptyText}>No documents uploaded yet</p>
           )}
           {filteredAndSorted.length === 0 && documents.length > 0 && (
@@ -219,10 +232,13 @@ export default function Sidebar() {
                 <span style={styles.docTitle} title={doc.title}>{doc.title}</span>
                 <button
                   onClick={() => handleDelete(doc.id)}
-                  style={styles.deleteBtn}
-                  title="Delete"
+                  style={{
+                    ...styles.deleteBtn,
+                    ...(confirmDeleteId === doc.id ? { color: 'var(--danger)', fontWeight: 600, fontSize: 11 } : {}),
+                  }}
+                  title={confirmDeleteId === doc.id ? 'Click again to confirm' : 'Delete'}
                 >
-                  <Trash2 size={14} />
+                  {confirmDeleteId === doc.id ? 'Confirm?' : <Trash2 size={14} />}
                 </button>
               </div>
               <div style={styles.docMeta}>
@@ -242,7 +258,6 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </aside>
   )
 }

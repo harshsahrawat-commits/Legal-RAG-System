@@ -62,11 +62,6 @@ export default function LoginScreen() {
         <p style={styles.footer}>Multi-tenant &middot; Multilingual &middot; Cited Answers</p>
       </div>
 
-      <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   )
 }
@@ -80,7 +75,8 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-0)',
   },
   card: {
-    width: 400,
+    width: '100%',
+    maxWidth: 400,
     padding: 40,
     background: 'var(--bg-1)',
     borderRadius: 'var(--radius-lg)',

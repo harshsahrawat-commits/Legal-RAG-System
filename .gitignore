@@ -42,5 +42,7 @@ token.json
 .claude/
 
 # Test files (large PDFs)
-# Uncomment if you don't want to include test documents
 test_files/
+
+# Database backups
+backups/

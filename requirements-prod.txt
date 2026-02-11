@@ -1,0 +1,26 @@
+# Production dependencies (excludes heavy optional packages and test deps)
+# For full dev setup, use requirements.txt instead
+
+# Document Processing (lightweight only)
+pymupdf4llm>=0.0.10
+psutil>=5.9.0
+
+# Embeddings & Reranking
+cohere>=5.0.0
+voyageai>=0.2.0
+
+# LLM Client (NVIDIA NIM API via OpenAI-compatible client)
+openai>=1.0.0
+
+# Vector Database
+psycopg2-binary>=2.9.0
+pgvector>=0.3.0
+
+# API Backend
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+numpy>=1.24.0

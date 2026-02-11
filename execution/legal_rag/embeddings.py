@@ -20,6 +20,7 @@ import logging
 from typing import Optional, Union
 from dataclasses import dataclass
 from pathlib import Path
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,8 @@ class BaseEmbeddingService:
         """
         self.config = config or EmbeddingConfig()
         self._client = None
-        self._cache = {}
+        self._cache = OrderedDict()
+        self._max_cache_size = 10000  # ~80MB for 1024-dim embeddings
 
         # Set up cache directory
         if self.config.cache_dir:
@@ -233,12 +235,13 @@ class BaseEmbeddingService:
         return hashlib.sha256(content.encode()).hexdigest()[:32]
 
     def _get_cached(self, key: str) -> Optional[list[float]]:
-        """Get cached embedding."""
+        """Get cached embedding (LRU: moves accessed item to end)."""
         if not self.config.use_cache:
             return None
 
-        # Check memory cache
+        # Check memory cache (LRU move-to-end on hit)
         if key in self._cache:
+            self._cache.move_to_end(key)
             return self._cache[key]
 
         # Check file cache
@@ -256,12 +259,15 @@ class BaseEmbeddingService:
         return None
 
     def _set_cached(self, key: str, embedding: list[float]) -> None:
-        """Cache an embedding."""
+        """Cache an embedding (bounded LRU, evicts oldest when full)."""
         if not self.config.use_cache:
             return
 
-        # Memory cache
+        # Memory cache (bounded LRU)
         self._cache[key] = embedding
+        self._cache.move_to_end(key)
+        while len(self._cache) > self._max_cache_size:
+            self._cache.popitem(last=False)
 
         # File cache
         if self._cache_path:

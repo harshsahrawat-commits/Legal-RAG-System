@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SourceInfo } from './types'
+import type { SourceInfo, ChatMessage } from './types'
 
 interface AppState {
   apiKey: string | null
@@ -7,12 +7,34 @@ interface AppState {
   setApiKey: (key: string) => void
   logout: () => void
 
+  messages: ChatMessage[]
+  setMessages: (msgs: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void
+  clearMessages: () => void
+
+  selectedDocumentId: string | null
+  setSelectedDocumentId: (id: string | null) => void
+
   sourcePanelOpen: boolean
   selectedSourceIndex: number
   currentSources: SourceInfo[]
   openSourcePanel: (index: number, sources: SourceInfo[]) => void
   closeSourcePanel: () => void
   navigateSource: (direction: 'prev' | 'next') => void
+}
+
+function loadMessages(): ChatMessage[] {
+  try {
+    const raw = sessionStorage.getItem('chatMessages')
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveMessages(msgs: ChatMessage[]) {
+  try {
+    sessionStorage.setItem('chatMessages', JSON.stringify(msgs))
+  } catch { /* quota exceeded */ }
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -26,8 +48,23 @@ export const useStore = create<AppState>((set, get) => ({
 
   logout: () => {
     localStorage.removeItem('apiKey')
-    set({ apiKey: null, isAuthenticated: false })
+    sessionStorage.removeItem('chatMessages')
+    set({ apiKey: null, isAuthenticated: false, messages: [] })
   },
+
+  messages: loadMessages(),
+  setMessages: (msgs) => {
+    const newMsgs = typeof msgs === 'function' ? msgs(get().messages) : msgs
+    saveMessages(newMsgs)
+    set({ messages: newMsgs })
+  },
+  clearMessages: () => {
+    sessionStorage.removeItem('chatMessages')
+    set({ messages: [] })
+  },
+
+  selectedDocumentId: null,
+  setSelectedDocumentId: (id) => set({ selectedDocumentId: id }),
 
   sourcePanelOpen: false,
   selectedSourceIndex: 0,

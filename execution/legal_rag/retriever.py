@@ -113,14 +113,17 @@ class QueryResultCache:
         return float(np.dot(a_arr, b_arr) / (np.linalg.norm(a_arr) * np.linalg.norm(b_arr)))
 
     def _make_cache_key(self, embedding: list[float]) -> str:
-        """Create cache key from embedding (first 8 values as hash)."""
-        return hashlib.sha256(str(embedding[:8]).encode()).hexdigest()[:16]
+        """Create cache key from full embedding to avoid collisions."""
+        # Sample every 32nd value for a 32-value fingerprint (fast + collision-resistant)
+        sampled = embedding[::32] if len(embedding) > 32 else embedding
+        return hashlib.sha256(str(sampled).encode()).hexdigest()[:16]
 
     def get(
         self,
         query: str,
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        query_embedding: Optional[list[float]] = None,
     ) -> Optional[list[SearchResult]]:
         """
         Check cache for semantically similar query.
@@ -130,8 +133,8 @@ class QueryResultCache:
         if not self._cache:
             return None
 
-        # Get query embedding (this is cheap - usually cached)
-        query_emb = self._embeddings.embed_query(query)
+        # Use provided embedding to avoid redundant API calls
+        query_emb = query_embedding if query_embedding is not None else self._embeddings.embed_query(query)
         current_time = time.time()
 
         # Check each cached query for similarity
@@ -171,9 +174,10 @@ class QueryResultCache:
         results: list[SearchResult],
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        query_embedding: Optional[list[float]] = None,
     ) -> None:
         """Cache query results."""
-        query_emb = self._embeddings.embed_query(query)
+        query_emb = query_embedding if query_embedding is not None else self._embeddings.embed_query(query)
         cache_key = self._make_cache_key(query_emb)
 
         # Evict oldest if at capacity
@@ -421,7 +425,8 @@ class HybridRetriever:
                 temperature=0.2,
             )
 
-            expanded = response.choices[0].message.content.strip()
+            raw = response.choices[0].message.content
+            expanded = raw.strip() if raw else query
             logger.info(f"Query expanded: '{query}' → '{expanded[:100]}...'")
             return expanded
 
@@ -455,7 +460,8 @@ class HybridRetriever:
                 temperature=0.3,
             )
 
-            hyde_doc = response.choices[0].message.content.strip()
+            raw = response.choices[0].message.content
+            hyde_doc = raw.strip() if raw else query
             logger.info(f"Generated HyDE document for query: '{query[:50]}...'")
             return hyde_doc
 
@@ -488,7 +494,10 @@ class HybridRetriever:
                 temperature=0.7,
             )
 
-            variants = [v.strip() for v in response.choices[0].message.content.strip().split('\n') if v.strip()]
+            raw = response.choices[0].message.content
+            if not raw:
+                return [query]
+            variants = [v.strip() for v in raw.strip().split('\n') if v.strip()]
             logger.info(f"Generated {len(variants)} query variants")
             return [query] + variants[:3]  # Original + up to 3 variants
 
@@ -530,13 +539,34 @@ class HybridRetriever:
         logger.info(f"Retrieving for query: {query[:50]}...")
 
         # ============================================================
+        # DIRECT PARAGRAPH LOOKUP: Skip full pipeline for paragraph refs
+        # ============================================================
+        para_num = self._extract_paragraph_reference(query)
+        if para_num is not None and document_id:
+            para_results = self.store.search_by_paragraph(
+                document_id=document_id,
+                paragraph_number=para_num,
+                client_id=client_id,
+            )
+            if para_results:
+                elapsed = (time.time() - start_time) * 1000
+                logger.info(f"Paragraph {para_num} found directly in {elapsed:.0f}ms")
+                return para_results[:top_k]
+            # Fall through to normal retrieval if paragraph not found
+
+        # ============================================================
         # ADVANCED OPTIMIZATION 1: Check semantic result cache
         # ============================================================
+        # Compute the original query embedding once — reuse for cache + search
+        original_embedding = self.embeddings.embed_query(query)
+
         if use_cache:
-            cached_results = self._result_cache.get(query, client_id, document_id)
+            cached_results = self._result_cache.get(
+                query, client_id, document_id, query_embedding=original_embedding,
+            )
             if cached_results is not None:
                 elapsed = (time.time() - start_time) * 1000
-                logger.info(f"🚀 Cache hit! Returning {len(cached_results)} cached results in {elapsed:.0f}ms")
+                logger.info(f"Cache hit! Returning {len(cached_results)} cached results in {elapsed:.0f}ms")
                 return cached_results[:top_k]
 
         # ============================================================
@@ -546,36 +576,51 @@ class HybridRetriever:
         effective_config = self._get_effective_config(query_type)
 
         # Query Enhancement (based on query classification)
+        # Run independent LLM enhancement calls in parallel for speed
         search_queries = [query]  # Always include original
         search_embeddings = []
 
-        # Query expansion - add legal terminology
-        if effective_config.use_query_expansion:
-            expanded_query = self._expand_query(query)
-            if expanded_query != query:
-                search_queries.append(expanded_query)
+        needs_expansion = effective_config.use_query_expansion
+        needs_hyde = effective_config.use_hyde
+        needs_multi = effective_config.use_multi_query
 
-        # HyDE - embed a hypothetical answer document
-        if effective_config.use_hyde:
-            hyde_doc = self._generate_hyde_document(query)
-            if hyde_doc != query:
-                hyde_embedding = self.embeddings.embed_query(hyde_doc)
-                search_embeddings.append(("hyde", hyde_embedding))
+        if any([needs_expansion, needs_hyde, needs_multi]):
+            from concurrent.futures import ThreadPoolExecutor
 
-        # Multi-query - generate query variants
-        if effective_config.use_multi_query:
-            variants = self._generate_query_variants(query)
-            for variant in variants[1:]:  # Skip first (original already included)
-                if variant not in search_queries:
-                    search_queries.append(variant)
+            futures = {}
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                if needs_expansion:
+                    futures["expand"] = executor.submit(self._expand_query, query)
+                if needs_hyde:
+                    futures["hyde"] = executor.submit(self._generate_hyde_document, query)
+                if needs_multi:
+                    futures["variants"] = executor.submit(self._generate_query_variants, query)
+
+            # Collect results
+            if "expand" in futures:
+                expanded_query = futures["expand"].result()
+                if expanded_query != query:
+                    search_queries.append(expanded_query)
+
+            if "hyde" in futures:
+                hyde_doc = futures["hyde"].result()
+                if hyde_doc != query:
+                    hyde_embedding = self.embeddings.embed_query(hyde_doc)
+                    search_embeddings.append(("hyde", hyde_embedding))
+
+            if "variants" in futures:
+                variants = futures["variants"].result()
+                for variant in variants[1:]:
+                    if variant not in search_queries:
+                        search_queries.append(variant)
 
         # Stage 1: Run searches for all queries and embeddings
         all_vector_results = []
         all_keyword_results = []
 
-        # Search with query embeddings
-        for search_query in search_queries:
-            query_embedding = self.embeddings.embed_query(search_query)
+        # Search with query embeddings (reuse original_embedding for first query)
+        for i, search_query in enumerate(search_queries):
+            query_embedding = original_embedding if (i == 0 and search_query == query) else self.embeddings.embed_query(search_query)
 
             # Vector search
             vector_results = self.store.search(
@@ -631,7 +676,10 @@ class HybridRetriever:
         # Cache results for future similar queries
         # ============================================================
         if use_cache and final_results:
-            self._result_cache.set(query, final_results, client_id, document_id)
+            self._result_cache.set(
+                query, final_results, client_id, document_id,
+                query_embedding=original_embedding,
+            )
 
         elapsed = (time.time() - start_time) * 1000
         logger.info(f"Returning {len(final_results)} results ({query_type} pipeline) in {elapsed:.0f}ms")
@@ -707,8 +755,10 @@ class HybridRetriever:
         if len(results) < 2:
             return True  # Not enough results to rerank
 
-        top_score = results[0].score
-        second_score = results[1].score
+        # Use original cosine similarity scores, not RRF scores
+        # (RRF scores max out at ~0.01, so comparing against 0.85 threshold would never match)
+        top_score = results[0].metadata.get("original_score", results[0].score)
+        second_score = results[1].metadata.get("original_score", results[1].score)
 
         # Skip if top result is very confident AND has a clear lead
         if (top_score > self.config.smart_rerank_threshold and

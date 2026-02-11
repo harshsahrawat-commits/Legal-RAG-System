@@ -336,6 +336,16 @@ async def query_documents(
     services = _container.get_services(lang_config)
     store = _container.get_store()
 
+    # Quota enforcement
+    try:
+        from .quotas import get_quota_manager, QuotaExceededError
+        quota_manager = get_quota_manager(store)
+        quota_manager.check_query_quota(client_id, tier=client.get("tier", "default"))
+    except QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except Exception as e:
+        logger.warning(f"Quota check failed (allowing request): {e}")
+
     # Audit
     store.log_audit(
         client_id=client_id,
