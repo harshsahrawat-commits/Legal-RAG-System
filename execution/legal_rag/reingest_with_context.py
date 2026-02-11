@@ -69,10 +69,10 @@ def reingest_all_documents(
     if clear_existing:
         logger.info("Clearing existing chunks...")
         try:
-            with store.pool.connection() as conn:
+            with store.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM document_chunks WHERE client_id = %s", (DEMO_CLIENT_ID,))
-                    cur.execute("DELETE FROM documents WHERE client_id = %s", (DEMO_CLIENT_ID,))
+                    cur.execute("DELETE FROM legal_documents WHERE client_id = %s", (DEMO_CLIENT_ID,))
                     conn.commit()
             logger.info("Existing data cleared")
         except Exception as e:
@@ -156,7 +156,7 @@ def reingest_all_documents(
 
     # Verify in database
     try:
-        with store.pool.connection() as conn:
+        with store.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT COUNT(*) FROM document_chunks WHERE client_id = %s AND contextualized = true",
@@ -177,7 +177,7 @@ if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Re-ingest documents with contextual chunking")
     arg_parser.add_argument(
         "--pdf-folder",
-        default="/Users/harshsahrawat/Legal_RAG_System_V1/test_files",
+        default=str(Path(__file__).parent.parent.parent / "test_files"),
         help="Path to folder containing PDFs"
     )
     arg_parser.add_argument(

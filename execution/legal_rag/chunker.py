@@ -18,6 +18,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 from .document_parser import ParsedDocument, DocumentSection
+from .language_config import TenantLanguageConfig
+from .language_patterns import (
+    SECTION_MARKERS,
+    REFERENCE_PATTERNS,
+    DEFINITION_MARKERS,
+    LABELS,
+    LLM_PROMPTS,
+)
 
 # Optional import for contextual chunking
 try:
@@ -116,44 +124,30 @@ class LegalChunker:
 
     Creates hierarchical chunks that maintain relationships between
     sections, with overlapping content for context preservation.
+    Supports multilingual documents via language_config.
     """
 
-    # Legal section markers that should start new chunks
-    SECTION_MARKERS = [
-        r"^(?:ARTICLE|Article)\s+[IVXLCDM\d]+",
-        r"^(?:SECTION|Section|§)\s*\d+",
-        r"^(?:PART|Part)\s+[IVXLCDM\d]+",
-        r"^(?:CHAPTER|Chapter)\s+\d+",
-        r"^\d+\.\s+[A-Z]",  # Numbered clauses like "1. DEFINITIONS"
-        r"^\([a-z]\)\s+",   # Lettered subclauses like "(a) The party..."
-        r"^\(\d+\)\s+",     # Numbered subclauses like "(1) Upon..."
-    ]
-
-    # Patterns for legal cross-references
-    REFERENCE_PATTERNS = [
-        r"(?:Section|§)\s*\d+(?:\.\d+)*",
-        r"(?:Article)\s+[IVXLCDM]+",
-        r"(?:Clause)\s+\d+(?:\.\d+)*",
-        r"(?:paragraph|para\.)\s*\([a-z]\)",
-    ]
-
-    # Common legal terms that might be defined
-    DEFINITION_MARKERS = [
-        r'"([A-Z][A-Za-z\s]+)"',
-        r"'([A-Z][A-Za-z\s]+)'",
-        r'"([A-Z][A-Za-z\s]+)"\s+means',
-        r"(?:defined as|shall mean|refers to)\s+['\"]([^'\"]+)['\"]",
-    ]
-
-    def __init__(self, config: Optional[ChunkConfig] = None):
-        """Initialize chunker with optional configuration."""
+    def __init__(
+        self,
+        config: Optional[ChunkConfig] = None,
+        language_config: Optional[TenantLanguageConfig] = None,
+    ):
+        """Initialize chunker with optional configuration and language support."""
         self.config = config or ChunkConfig()
+        self._language_config = language_config or TenantLanguageConfig.for_language("en")
+        self._lang = self._language_config.language
+
+        # Load language-specific patterns from centralized module
+        markers = SECTION_MARKERS.get(self._lang, SECTION_MARKERS["en"])
+        refs = REFERENCE_PATTERNS.get(self._lang, REFERENCE_PATTERNS["en"])
+        self._definition_markers = DEFINITION_MARKERS.get(self._lang, DEFINITION_MARKERS["en"])
+
         self._section_pattern = re.compile(
-            "|".join(self.SECTION_MARKERS),
+            "|".join(markers),
             re.MULTILINE
         )
         self._reference_pattern = re.compile(
-            "|".join(self.REFERENCE_PATTERNS),
+            "|".join(refs),
             re.IGNORECASE
         )
 
@@ -212,10 +206,12 @@ class LegalChunker:
         if last_period > 2000:
             summary_text = summary_text[:last_period + 1]
 
+        summary_label = LABELS.get(self._lang, LABELS["en"])["document_summary"]
+
         return Chunk(
             chunk_id=str(uuid.uuid4()),
             document_id=document.metadata.document_id,
-            content=f"DOCUMENT SUMMARY: {document.metadata.title}\n\n{summary_text}",
+            content=f"{summary_label} {document.metadata.title}\n\n{summary_text}",
             token_count=self._estimate_tokens(summary_text),
             level=0,
             section_title=document.metadata.title,
@@ -584,8 +580,8 @@ class LegalChunker:
             refs = self._reference_pattern.findall(chunk.content)
             chunk.legal_references = list(set(refs))
 
-            # Find defined terms
-            for pattern in self.DEFINITION_MARKERS:
+            # Find defined terms using language-specific markers
+            for pattern in self._definition_markers:
                 matches = re.findall(pattern, chunk.content)
                 chunk.definitions_used.extend(matches)
             chunk.definitions_used = list(set(chunk.definitions_used))
@@ -600,8 +596,8 @@ class LegalChunker:
                 parent.child_chunk_ids.append(chunk.chunk_id)
 
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count (roughly 4 chars per token for English)."""
-        return len(text) // 4
+        """Estimate token count using language-appropriate chars_per_token ratio."""
+        return len(text) // self._language_config.chars_per_token
 
     def contextualize_chunks(
         self,
@@ -683,17 +679,12 @@ class LegalChunker:
         model: str,
     ) -> str:
         """Generate a context prefix for a single chunk using LLM."""
-        prompt = f"""<document>
-{document_summary[:1500]}
-</document>
-
-Here is the chunk we want to situate within the document:
-<chunk>
-Section: {section_title}
-{chunk_content[:800]}
-</chunk>
-
-Give a short succinct context (2-3 sentences) to situate this chunk within the overall document for retrieval purposes. Focus on what this section covers and how it relates to the document's main subject. Answer only with the context, nothing else."""
+        prompt_template = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["contextualize_chunk"]
+        prompt = prompt_template.format(
+            document_summary=document_summary[:1500],
+            section_title=section_title,
+            chunk_content=chunk_content[:800],
+        )
 
         response = client.chat.completions.create(
             model=model,

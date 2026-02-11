@@ -38,6 +38,9 @@ token.json
 # Jupyter
 .ipynb_checkpoints/
 
+# Claude Code session data
+.claude/
+
 # Test files (large PDFs)
 # Uncomment if you don't want to include test documents
 test_files/

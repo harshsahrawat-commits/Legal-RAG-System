@@ -1,15 +1,13 @@
 """
 Legal Document Parser - Extracts structured content from legal PDFs
 
-Uses Docling for high-accuracy PDF extraction (97.9% on complex tables).
-Preserves legal document structure: articles, clauses, sections, appendices.
+Uses PyMuPDF4LLM for PDF extraction with legal structure preservation.
+Automatically detects document type and extracts articles, clauses, sections, appendices.
 """
 
 import os
-# Set ALL possible AI cache paths to a writable directory for cloud deployment
+# Set cache paths to a writable directory for cloud deployment
 os.environ["HF_HOME"] = "/tmp/huggingface"
-os.environ["MODELSCOPE_CACHE"] = "/tmp/modelscope"
-os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp/docling"
 os.environ["XDG_CACHE_HOME"] = "/tmp/cache"
 import re
 import uuid
@@ -19,6 +17,16 @@ from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
 import html
+
+from .language_config import TenantLanguageConfig
+from .language_patterns import (
+    DOCTYPE_PATTERNS,
+    SECTION_PATTERNS,
+    DATE_PATTERNS,
+    PARTY_PATTERNS,
+    JURISDICTION_PATTERNS,
+    TITLE_LETTER_REGEX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,72 +102,84 @@ class LegalDocumentParser:
     """
     Parses legal documents with structure preservation.
 
-    Supports PDF extraction via Docling with fallback to PyMuPDF.
+    Uses PyMuPDF4LLM for PDF extraction (with optional Docling fallback).
     Automatically detects document type and extracts legal structure.
+    Supports multilingual documents via language_config.
     """
 
-    # Patterns for detecting legal document structure
-    SECTION_PATTERNS = {
-        "part": re.compile(r"^(?:PART|Part)\s+([IVXLCDM]+|\d+)[.:\s]", re.MULTILINE),
-        "chapter": re.compile(r"^(?:CHAPTER|Chapter)\s+(\d+|[IVXLCDM]+)[.:\s]", re.MULTILINE),
-        "section": re.compile(r"^(?:SECTION|Section|§)\s*(\d+(?:\.\d+)*)[.:\s]", re.MULTILINE),
-        "article": re.compile(r"^(?:ARTICLE|Article)\s+(\d+|[IVXLCDM]+)[.:\s]", re.MULTILINE),
-        "clause": re.compile(r"^(?:Clause|\d+\.)\s*(\d+(?:\.\d+)*)[.:\s]", re.MULTILINE),
-    }
-
-    # Patterns for document type detection
-    DOCTYPE_PATTERNS = {
-        "contract": [
-            r"(?i)agreement|contract|terms and conditions|parties agree",
-            r"(?i)witnesseth|whereas|now therefore",
-            r"(?i)executed as of|effective date",
-        ],
-        "statute": [
-            r"(?i)enacted by|legislature|public law",
-            r"(?i)be it enacted|section \d+\.",
-            r"(?i)code of|statutes at large",
-        ],
-        "case_law": [
-            r"(?i)plaintiff|defendant|court|judge",
-            r"(?i)opinion|held|judgment|ruling",
-            r"(?i)appeal|appellant|appellee",
-        ],
-        "regulation": [
-            r"(?i)regulation|rule|agency|federal register",
-            r"(?i)promulgated|pursuant to",
-            r"(?i)cfr|code of federal regulations",
-        ],
-    }
-
-    def __init__(self, use_docling: bool = False):
+    def __init__(
+        self,
+        language_config: Optional[TenantLanguageConfig] = None,
+        use_docling: Optional[bool] = None,
+        enable_ocr: bool = True,
+    ):
         """
         Initialize the parser.
-        """
-        self.is_cloud = os.environ.get("STREAMLIT_RUNTIME_ENV") is not None or os.environ.get("HOSTNAME", "").endswith(".streamlit.app")
-        self.use_docling = False # Force false for stability
-        
-        self._docling_available = False
-        self._pymupdf_available = False
 
-        # Try PyMuPDF (Primary)
+        Args:
+            language_config: Per-tenant language configuration. Defaults to English.
+            use_docling: Force Docling on/off. None = auto-detect by RAM.
+            enable_ocr: Enable Surya OCR fallback for scanned PDFs. Set False to skip.
+        """
+        self._enable_ocr = enable_ocr
+        self._language_config = language_config or TenantLanguageConfig.for_language("en")
+        self._lang = self._language_config.language
+
+        # Load language-specific patterns from centralized module
+        self._doctype_patterns = DOCTYPE_PATTERNS.get(self._lang, DOCTYPE_PATTERNS["en"])
+        self._section_patterns = SECTION_PATTERNS.get(self._lang, SECTION_PATTERNS["en"])
+
+        self._pymupdf_available = False
+        self._docling_available = False
+        self._surya_available = False
+        self._use_docling = use_docling
+
+        # Try to load Docling if requested or auto-detecting
+        if use_docling is not False:
+            try:
+                import docling  # noqa: F401
+                self._docling_available = True
+                logger.info("Docling is available")
+            except ImportError:
+                logger.debug("Docling not installed")
+
+        # Auto-detect: use Docling only if enough RAM (>2GB)
+        if use_docling is None and self._docling_available:
+            try:
+                import psutil
+                available_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+                self._use_docling = available_ram_gb > 2.0
+                if self._use_docling:
+                    logger.info(f"Auto-enabled Docling ({available_ram_gb:.1f}GB RAM available)")
+                else:
+                    logger.info(f"Auto-disabled Docling ({available_ram_gb:.1f}GB RAM, need >2GB)")
+            except ImportError:
+                self._use_docling = False
+                logger.debug("psutil not available, defaulting to PyMuPDF4LLM")
+
         try:
-            import pymupdf4llm
+            import pymupdf4llm  # noqa: F401
             self._pymupdf_available = True
             logger.info("PyMuPDF4LLM initialized successfully")
         except ImportError:
             logger.warning("PyMuPDF4LLM not available")
 
-        # Optional Docling check (Secondary/Legacy)
-        try:
-            from docling.document_converter import DocumentConverter
-            if not self.is_cloud: # Never use heavy docling on cloud
-                self._docling_available = True
-                logger.info("Docling available (Legacy)")
-        except ImportError:
-            pass
+        # Check for Surya OCR (fallback for scanned PDFs)
+        if self._enable_ocr:
+            try:
+                from surya.recognition import RecognitionPredictor  # noqa: F401
+                self._surya_available = True
+                logger.info("Surya OCR available (fallback for scanned PDFs)")
+            except ImportError:
+                logger.debug("Surya OCR not installed — scanned PDFs will be skipped")
+        else:
+            logger.info("OCR disabled — scanned PDFs will be skipped")
 
         if not self._pymupdf_available and not self._docling_available:
-            raise ImportError("No PDF parsing library available (pymupdf4llm is required).")
+            raise ImportError(
+                "At least one PDF engine is required. "
+                "Run: pip install pymupdf4llm  OR  pip install docling"
+            )
 
     def parse(self, file_path: str, client_id: Optional[str] = None) -> ParsedDocument:
         """
@@ -178,14 +198,29 @@ class LegalDocumentParser:
 
         logger.info(f"Parsing document: {path.name}")
 
-        # Extract raw content with page tracking
-        if self._docling_available and self.use_docling:
-            raw_markdown, page_count, page_ranges = self._extract_with_docling(file_path)
+        # Route to appropriate extraction engine
+        if self._use_docling and self._docling_available:
+            try:
+                raw_markdown, page_count, page_ranges = self._extract_with_docling(file_path)
+            except Exception as e:
+                logger.warning(f"Docling extraction failed, falling back to PyMuPDF: {e}")
+                raw_markdown, page_count, page_ranges = self._extract_with_pymupdf(file_path)
         else:
             raw_markdown, page_count, page_ranges = self._extract_with_pymupdf(file_path)
 
         # Clean up the text
         raw_text = self._markdown_to_text(raw_markdown)
+
+        # Fallback to Surya OCR if text extraction yielded too little content
+        # (indicates a scanned/image-based PDF)
+        if len(raw_text.strip()) < 50 and self._surya_available:
+            logger.info(f"  PyMuPDF extracted too little text ({len(raw_text.strip())} chars), trying Surya OCR...")
+            try:
+                raw_markdown, page_count, page_ranges = self._extract_with_surya(file_path)
+                raw_text = self._markdown_to_text(raw_markdown)
+                logger.info(f"  Surya OCR extracted {len(raw_text)} chars from {page_count} pages")
+            except Exception as e:
+                logger.warning(f"  Surya OCR failed: {e}")
 
         # Detect document type
         doc_type = self._detect_document_type(raw_text)
@@ -216,35 +251,6 @@ class LegalDocumentParser:
             raw_text=raw_text,
             raw_markdown=raw_markdown,
         )
-
-    def _extract_with_docling(self, file_path: str) -> tuple[str, int, list[tuple[int, int, int]]]:
-        """
-        Extract content using Docling.
-
-        Returns:
-        Extract content using Docling with safety fallback.
-        """
-        try:
-            result = self._docling_converter.convert(file_path)
-            markdown = result.document.export_to_markdown()
-
-            # Get page count from result
-            page_count = len(result.document.pages) if hasattr(result.document, 'pages') else 0
-
-            # Docling doesn't provide easy character-to-page mapping, so estimate evenly
-            # This is a rough approximation - for better accuracy, use PyMuPDF
-            page_ranges = []
-            if page_count > 0:
-                chars_per_page = len(markdown) // page_count
-                for page_num in range(page_count):
-                    start = page_num * chars_per_page
-                    end = (page_num + 1) * chars_per_page if page_num < page_count - 1 else len(markdown)
-                    page_ranges.append((page_num + 1, start, end))
-
-            return markdown, page_count, page_ranges
-        except Exception as e:
-            logger.error(f"Docling runtime failure: {e}. Falling back to PyMuPDF.")
-            return self._extract_with_pymupdf(file_path)
 
     def _extract_with_pymupdf(self, file_path: str) -> tuple[str, int, list[tuple[int, int, int]]]:
         """
@@ -278,15 +284,121 @@ class LegalDocumentParser:
 
         return markdown, page_count, page_ranges
 
+    def _extract_with_docling(self, file_path: str) -> tuple[str, int, list[tuple[int, int, int]]]:
+        """
+        Extract content using Docling for high-quality OCR and table extraction.
+
+        Docling provides superior handling of complex PDFs (scanned docs, tables,
+        multi-column layouts) but requires >2GB RAM.
+
+        Returns:
+            tuple: (markdown, page_count, page_ranges)
+        """
+        from docling.document_converter import DocumentConverter
+
+        converter = DocumentConverter()
+        result = converter.convert(file_path)
+
+        # Export to markdown
+        markdown = result.document.export_to_markdown()
+
+        # Get page count from Docling result
+        page_count = getattr(result.document, 'num_pages', 0)
+        if page_count == 0:
+            # Fallback: count from PyMuPDF if Docling doesn't report it
+            try:
+                import fitz
+                with fitz.open(file_path) as doc:
+                    page_count = len(doc)
+            except Exception:
+                page_count = 1
+
+        # Build approximate page ranges
+        page_ranges = []
+        if page_count > 0:
+            chars_per_page = max(1, len(markdown) // page_count)
+            for i in range(page_count):
+                start = i * chars_per_page
+                end = (i + 1) * chars_per_page
+                page_ranges.append((i + 1, start, end))
+
+        logger.info(f"Docling extracted {page_count} pages, {len(markdown)} chars")
+        return markdown, page_count, page_ranges
+
+    def _extract_with_surya(self, file_path: str) -> tuple[str, int, list[tuple[int, int, int]]]:
+        """
+        Extract text from scanned PDFs using Surya OCR.
+
+        Surya provides high-accuracy (97.7%) OCR with layout analysis,
+        supporting 90+ languages including Greek. Used as a fallback when
+        PyMuPDF extracts too little text (indicating image-based PDFs).
+
+        Returns:
+            tuple: (markdown, page_count, page_ranges)
+        """
+        from surya.foundation import FoundationPredictor
+        from surya.recognition import RecognitionPredictor
+        from surya.detection import DetectionPredictor
+        from surya.common.surya.schema import TaskNames
+        from surya.input.load import load_pdf
+
+        # Lazy-init predictors (cached on first call for reuse across documents)
+        if not hasattr(self, '_surya_rec_predictor'):
+            logger.info("  Loading Surya OCR models (first time, may take a moment)...")
+            self._surya_foundation = FoundationPredictor()
+            self._surya_det_predictor = DetectionPredictor()
+            self._surya_rec_predictor = RecognitionPredictor(self._surya_foundation)
+
+        # Load PDF pages as images
+        images, names = load_pdf(file_path)
+        page_count = len(images)
+
+        if page_count == 0:
+            return "", 0, []
+
+        # Run OCR
+        task_names = [TaskNames.ocr_with_boxes] * len(images)
+        predictions = self._surya_rec_predictor(
+            images=images,
+            task_names=task_names,
+            det_predictor=self._surya_det_predictor,
+        )
+
+        # Build markdown from OCR results with page tracking
+        page_ranges = []
+        markdown_parts = []
+        cumulative_char = 0
+
+        for page_idx, prediction in enumerate(predictions):
+            page_start = cumulative_char
+
+            # Add page header
+            page_header = f"\n## Page {page_idx + 1}\n\n"
+            markdown_parts.append(page_header)
+            cumulative_char += len(page_header)
+
+            # Add each text line
+            for line in prediction.text_lines:
+                line_text = line.text.strip()
+                if line_text:
+                    markdown_parts.append(line_text + "\n")
+                    cumulative_char += len(line_text) + 1
+
+            page_end = cumulative_char
+            page_ranges.append((page_idx + 1, page_start, page_end))
+
+        markdown = "".join(markdown_parts)
+        return markdown, page_count, page_ranges
+
     def _markdown_to_text(self, markdown: str) -> str:
         """Convert markdown to plain text."""
-        # Remove markdown formatting
+        # Remove markdown formatting (images before links to avoid partial match)
         text = re.sub(r'#+\s*', '', markdown)  # Headers
         text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # Bold
         text = re.sub(r'\*([^*]+)\*', r'\1', text)  # Italic
+        text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', text)  # Images
         text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # Links
         text = re.sub(r'`([^`]+)`', r'\1', text)  # Code
-        text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', text)  # Images
         
         # Clean OCR artifacts
         text = re.sub(r'GLYPH&lt;\d+&gt;', '', text)  # HTML encoded GLYPH
@@ -300,10 +412,10 @@ class LegalDocumentParser:
         return text.strip()
 
     def _detect_document_type(self, text: str) -> str:
-        """Detect the type of legal document."""
+        """Detect the type of legal document using language-aware patterns."""
         scores = {}
 
-        for doc_type, patterns in self.DOCTYPE_PATTERNS.items():
+        for doc_type, patterns in self._doctype_patterns.items():
             score = 0
             for pattern in patterns:
                 matches = len(re.findall(pattern, text[:5000]))  # Check first 5000 chars
@@ -336,7 +448,8 @@ class LegalDocumentParser:
             # 2. Contains spaces (avoid "wesruefr,rodffif")
             # 3. No excessive punctuation
             
-            letter_count = len(re.findall(r'[a-zA-Z]', clean_line))
+            letter_regex = TITLE_LETTER_REGEX.get(self._lang, TITLE_LETTER_REGEX["en"])
+            letter_count = len(re.findall(letter_regex, clean_line))
             if letter_count / len(clean_line) < 0.4:
                 continue
                 
@@ -472,14 +585,8 @@ class LegalDocumentParser:
         return sorted(pages) if pages else [1]  # Default to page 1 if can't determine
 
     def _extract_jurisdiction(self, text: str) -> Optional[str]:
-        """Extract jurisdiction from document text."""
-        # Common jurisdiction patterns
-        patterns = [
-            r"(?i)state of ([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-            r"(?i)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:court|district|circuit)",
-            r"(?i)laws of (?:the state of )?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-            r"(?i)governed by (?:the laws of )?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-        ]
+        """Extract jurisdiction from document text using language-aware patterns."""
+        patterns = JURISDICTION_PATTERNS.get(self._lang, JURISDICTION_PATTERNS["en"])
 
         for pattern in patterns:
             match = re.search(pattern, text[:3000])
@@ -489,18 +596,12 @@ class LegalDocumentParser:
         return None
 
     def _extract_parties(self, text: str, doc_type: str) -> list[str]:
-        """Extract party names from contracts."""
+        """Extract party names from contracts using language-aware patterns."""
         if doc_type != "contract":
             return []
 
         parties = []
-
-        # Look for common party patterns
-        patterns = [
-            r'(?i)(?:between|by and between)\s+([A-Z][A-Za-z\s,\.]+?)(?:\s+\("|\s+and\s+)',
-            r'(?i)"([A-Z][A-Za-z]+)"\s*(?:,\s*)?(?:a|an|the)',
-            r'(?i)(?:hereinafter|referred to as)\s+"([A-Z][A-Za-z]+)"',
-        ]
+        patterns = PARTY_PATTERNS.get(self._lang, PARTY_PATTERNS["en"])
 
         for pattern in patterns:
             matches = re.findall(pattern, text[:2000])
@@ -509,27 +610,35 @@ class LegalDocumentParser:
         return list(set(parties))[:5]  # Dedupe and limit
 
     def _extract_date(self, text: str) -> Optional[datetime]:
-        """Extract effective date from document."""
-        patterns = [
-            r'(?i)effective\s+(?:as\s+of\s+)?(\w+\s+\d{1,2},?\s+\d{4})',
-            r'(?i)dated\s+(?:as\s+of\s+)?(\w+\s+\d{1,2},?\s+\d{4})',
-            r'(?i)this\s+(\d{1,2}(?:st|nd|rd|th)?\s+day\s+of\s+\w+,?\s+\d{4})',
-        ]
+        """Extract effective date from document using language-aware patterns."""
+        lang_date = DATE_PATTERNS.get(self._lang, DATE_PATTERNS["en"])
 
-        for pattern in patterns:
+        if self._lang == "el":
+            # Greek date parsing: "15 Ιανουαρίου 2024"
+            for pattern in lang_date["patterns"]:
+                match = re.search(pattern, text[:3000])
+                if match:
+                    date_str = match.group(1)
+                    month_map = lang_date["month_map"]
+                    for greek_month, month_num in month_map.items():
+                        if greek_month in date_str.lower():
+                            # Replace Greek month with numeric
+                            parts = date_str.lower().replace(greek_month, "").split()
+                            try:
+                                day = int(parts[0])
+                                year = int(parts[-1])
+                                return datetime(year, int(month_num), day)
+                            except (ValueError, IndexError):
+                                continue
+            return None
+
+        # English date parsing
+        for pattern in lang_date["patterns"]:
             match = re.search(pattern, text[:3000])
             if match:
                 date_str = match.group(1)
-                # Try parsing common formats
-                formats = [
-                    "%B %d, %Y",
-                    "%B %d %Y",
-                    "%d day of %B, %Y",
-                    "%d day of %B %Y",
-                ]
-                for fmt in formats:
+                for fmt in lang_date["formats"]:
                     try:
-                        # Clean up ordinals
                         clean_date = re.sub(r'(\d+)(?:st|nd|rd|th)', r'\1', date_str)
                         return datetime.strptime(clean_date, fmt)
                     except ValueError:

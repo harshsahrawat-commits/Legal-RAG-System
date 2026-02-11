@@ -148,7 +148,7 @@ cd Legal-RAG-System
 ### 2. Install Dependencies
 
 ```bash
-pip install -r requirements_legal_rag.txt
+pip install -r requirements.txt
 ```
 
 ### 3. Set Up PostgreSQL with pgvector
@@ -255,7 +255,7 @@ Legal-RAG-System/
 ├── execution/legal_rag/          # Core Python modules
 │   ├── document_parser.py        # PDF extraction (Docling/PyMuPDF)
 │   ├── chunker.py                # Hierarchical chunking
-│   ├── embeddings.py             # Cohere embedding service
+│   ├── embeddings.py             # Voyage AI / Cohere embedding service
 │   ├── vector_store.py           # PostgreSQL + pgvector operations
 │   ├── retriever.py              # Hybrid search pipeline
 │   ├── citation.py               # Citation formatting
@@ -269,9 +269,55 @@ Legal-RAG-System/
 │   └── query_documents.md        # Query handling guide
 │
 ├── .env.template                 # Environment variable template
-├── requirements_legal_rag.txt    # Python dependencies
-├── LEGAL_RAG_V1_DOCUMENTATION.md # Full technical documentation
+├── requirements.txt              # Python dependencies
 └── README.md                     # This file
+```
+
+---
+
+## 📊 Database Schema
+
+### Tables
+
+```sql
+CREATE TABLE legal_documents (
+    document_id UUID PRIMARY KEY,
+    title TEXT NOT NULL,
+    document_type VARCHAR(50),  -- contract, statute, case_law, regulation, brief, memo
+    jurisdiction VARCHAR(100),
+    page_count INTEGER,
+    metadata JSONB,
+    client_id VARCHAR(100),     -- For multi-tenant isolation
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE document_chunks (
+    chunk_id UUID PRIMARY KEY,
+    document_id UUID REFERENCES legal_documents(document_id),
+    content TEXT NOT NULL,
+    embedding VECTOR(1024),     -- 1024 dimensions
+    section_title TEXT,
+    hierarchy_path TEXT,        -- e.g., "Document > Article III > Section 3.1"
+    page_numbers TEXT,          -- e.g., "1-2" or "3"
+    chunk_level INTEGER,        -- 0=summary, 1=section, 2=article, 3=paragraph
+    metadata JSONB,
+    client_id VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### Indexes
+
+```sql
+-- Vector similarity search (IVFFlat)
+CREATE INDEX ON document_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Full-text search (GIN)
+CREATE INDEX ON document_chunks USING gin (to_tsvector('english', content));
+
+-- Client isolation
+CREATE INDEX ON document_chunks (client_id);
+CREATE INDEX ON legal_documents (client_id);
 ```
 
 ---
@@ -286,6 +332,14 @@ Legal-RAG-System/
 | NVIDIA NIM | ~$0.005-0.01 |
 | **Total** | **~$0.01-0.02** |
 
+### Per Document Ingestion
+
+| Document Size | Approx. Tokens | Embedding Cost |
+|---------------|----------------|----------------|
+| 10 pages | ~5,000 | ~$0.0005 |
+| 50 pages | ~25,000 | ~$0.0025 |
+| 100 pages | ~50,000 | ~$0.005 |
+
 ### Monthly (Production: 10K docs, 1K queries/day)
 | Component | Cost |
 |-----------|------|
@@ -293,6 +347,14 @@ Legal-RAG-System/
 | NVIDIA NIM | ~$150-200/mo |
 | PostgreSQL | ~$40/mo |
 | **Total** | **~$310-360/mo** |
+
+### Cost Comparison
+
+| Solution | Monthly Cost | Notes |
+|----------|--------------|-------|
+| **This system** | ~$360 | Self-managed, full control |
+| Pinecone + OpenAI | ~$800-1000 | Managed, less control |
+| Enterprise RAG SaaS | $1500-3000+ | Fully managed |
 
 ---
 
@@ -326,6 +388,66 @@ python -m execution.legal_rag.test_pipeline
 # ✅ Embeddings: PASSED
 # ✅ Vector Store: PASSED
 # ✅ Full Pipeline: PASSED
+```
+
+---
+
+## 🔥 Troubleshooting
+
+### Common Errors
+
+**"COHERE_API_KEY not found"**
+```bash
+# Check .env file exists and has the key
+cat .env | grep COHERE
+# Solution: Add to .env
+echo "COHERE_API_KEY=your-key" >> .env
+```
+
+**"psql: command not found"**
+```bash
+# Use full path
+/opt/homebrew/opt/postgresql@17/bin/psql -d legal_rag
+# Or add to PATH in ~/.zshrc
+export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
+```
+
+**"extension vector is not available"**
+```bash
+brew install pgvector
+brew services restart postgresql@17
+/opt/homebrew/opt/postgresql@17/bin/psql -d legal_rag -c "CREATE EXTENSION vector;"
+```
+
+**"Port 8501 already in use"**
+```bash
+pkill -f streamlit
+# Or use a different port
+streamlit run execution/legal_rag/demo_app.py --server.port 8502
+```
+
+**"NVIDIA API 404 error"** -- The model name may have changed. Current working model: `meta/llama-3.1-70b-instruct`
+
+### Quick Commands
+
+```bash
+# Start PostgreSQL
+brew services start postgresql@17
+
+# Run the app
+streamlit run execution/legal_rag/demo_app.py
+
+# Stop the app
+pkill -f streamlit
+
+# Stop PostgreSQL
+brew services stop postgresql@17
+
+# Connect to database
+/opt/homebrew/opt/postgresql@17/bin/psql -d legal_rag
+
+# Reset database (delete all data)
+/opt/homebrew/opt/postgresql@17/bin/psql -d legal_rag -c "DROP TABLE IF EXISTS document_chunks, legal_documents CASCADE;"
 ```
 
 ---

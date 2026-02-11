@@ -21,9 +21,21 @@ from collections import OrderedDict
 try:
     from .vector_store import VectorStore, SearchResult
     from .embeddings import EmbeddingService
+    from .language_config import TenantLanguageConfig
+    from .language_patterns import (
+        QUERY_CLASSIFICATION,
+        PARAGRAPH_REFERENCE_PATTERNS,
+        LLM_PROMPTS,
+    )
 except ImportError:
     from vector_store import VectorStore, SearchResult
     from embeddings import EmbeddingService
+    from language_config import TenantLanguageConfig
+    from language_patterns import (
+        QUERY_CLASSIFICATION,
+        PARAGRAPH_REFERENCE_PATTERNS,
+        LLM_PROMPTS,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +114,7 @@ class QueryResultCache:
 
     def _make_cache_key(self, embedding: list[float]) -> str:
         """Create cache key from embedding (first 8 values as hash)."""
-        return hashlib.md5(str(embedding[:8]).encode()).hexdigest()[:16]
+        return hashlib.sha256(str(embedding[:8]).encode()).hexdigest()[:16]
 
     def get(
         self,
@@ -231,6 +243,7 @@ class HybridRetriever:
         vector_store: VectorStore,
         embedding_service: EmbeddingService,
         config: Optional[RetrievalConfig] = None,
+        language_config: Optional[TenantLanguageConfig] = None,
     ):
         """
         Initialize retriever.
@@ -239,14 +252,19 @@ class HybridRetriever:
             vector_store: Vector store instance
             embedding_service: Embedding service instance
             config: Optional retrieval configuration
+            language_config: Per-tenant language configuration. Defaults to English.
         """
         self.store = vector_store
         self.embeddings = embedding_service
         self.config = config or RetrievalConfig()
+        self._language_config = language_config or TenantLanguageConfig.for_language("en")
+        self._lang = self._language_config.language
         self._reranker = None
+        self._llm_client = None  # Cached OpenAI client for NVIDIA NIM
 
-        # Quick Win #4: Reranking cache to reduce API costs
-        self._rerank_cache = {}
+        # Quick Win #4: Reranking cache to reduce API costs (bounded LRU)
+        self._rerank_cache = OrderedDict()
+        self._rerank_cache_max_size = 1000
 
         # Advanced Optimization: Semantic result cache
         # Caches full retrieval results for semantically similar queries
@@ -277,9 +295,20 @@ class HybridRetriever:
             logger.warning("Cohere not installed. Reranking disabled.")
             self.config.use_reranking = False
 
+    def _get_llm_client(self):
+        """Get or create cached OpenAI client for NVIDIA NIM API."""
+        if self._llm_client is None:
+            from openai import OpenAI
+            self._llm_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=os.getenv("NVIDIA_API_KEY"),
+                timeout=30.0,
+            )
+        return self._llm_client
+
     def _classify_query(self, query: str) -> str:
         """
-        Classify query type for adaptive processing.
+        Classify query type for adaptive processing (language-aware).
 
         Different query types use different retrieval pipelines:
         - simple: Very short queries (≤3 words, no question words) - skip all enhancement
@@ -290,43 +319,30 @@ class HybridRetriever:
         Returns:
             Query classification: "simple", "factual", "analytical", or "standard"
         """
+        lang_patterns = QUERY_CLASSIFICATION.get(self._lang, QUERY_CLASSIFICATION["en"])
         query_lower = query.lower().strip()
         word_count = len(query.split())
 
         # Check for analytical question patterns FIRST (highest priority)
-        analytical_patterns = [
-            r'^(explain|analyze|compare|contrast|evaluate|assess)\b',
-            r'^why\s+',
-            r'\b(implications?|consequences?|impact|effect)\b',
-            r'\b(relationship|difference|similarity)\s+(between|among)\b',
-            r'\b(pros?\s+and\s+cons?|advantages?\s+and\s+disadvantages?)\b',
-        ]
-        for pattern in analytical_patterns:
+        for pattern in lang_patterns["analytical"]:
             if re.search(pattern, query_lower):
                 logger.info(f"Query classified as 'analytical' (pattern match)")
                 return "analytical"
 
         # Check for factual question patterns SECOND
-        factual_patterns = [
-            r'^(what|who|when|where)\s+(is|are|was|were)\b',
-            r'^(what|who)\s+(did|does|do)\b',
-            r'^(list|name|identify)\s+',
-            r'\b(how\s+many|how\s+much)\b',
-            r'^what\s+are\s+the\b',  # "What are the..."
-        ]
-        for pattern in factual_patterns:
+        for pattern in lang_patterns["factual"]:
             if re.search(pattern, query_lower):
                 logger.info(f"Query classified as 'factual' (pattern match)")
                 return "factual"
 
         # Check for specific legal terminology (use standard pipeline)
-        if re.search(r'section|article|clause|paragraph|¶', query_lower):
+        legal_ref = lang_patterns["legal_reference"]
+        if re.search(legal_ref, query_lower):
             logger.info(f"Query classified as 'standard' (legal reference)")
             return "standard"
 
         # Simple queries: very short AND no question words
-        # Must be ≤3 words and not start with question words
-        question_starters = ['what', 'who', 'when', 'where', 'how', 'why', 'which', 'list', 'explain']
+        question_starters = lang_patterns["question_starters"]
         first_word = query_lower.split()[0] if query_lower.split() else ""
         if word_count <= 3 and first_word not in question_starters:
             logger.info(f"Query classified as 'simple' ({word_count} words, no question word)")
@@ -359,25 +375,16 @@ class HybridRetriever:
 
     def _extract_paragraph_reference(self, query: str) -> Optional[int]:
         """
-        Extract paragraph number from query if present.
+        Extract paragraph number from query if present (language-aware).
 
         Detects patterns like:
-        - "paragraph 28", "para 28", "para. 28"
-        - "¶28", "¶ 28"
-        - "in paragraph 28"
-        - "what does paragraph 28 say"
+        - "paragraph 28", "para 28", "para. 28", "¶28"
+        - Greek: "παράγραφος 28", "παρ. 28"
 
         Returns:
             Paragraph number if found, None otherwise
         """
-        # Patterns for paragraph references
-        patterns = [
-            r'\bparagraph\s*#?\s*(\d+)\b',  # paragraph 28, paragraph #28
-            r'\bpara\.?\s*#?\s*(\d+)\b',     # para 28, para. 28, para #28
-            r'¶\s*(\d+)',                     # ¶28, ¶ 28
-            r'\bp\.\s*(\d+)\b',               # p. 28
-        ]
-
+        patterns = PARAGRAPH_REFERENCE_PATTERNS.get(self._lang, PARAGRAPH_REFERENCE_PATTERNS["en"])
         query_lower = query.lower()
 
         for pattern in patterns:
@@ -391,39 +398,21 @@ class HybridRetriever:
 
     def _expand_query(self, query: str) -> str:
         """
-        Expand query with legal terminology and synonyms.
+        Expand query with legal terminology and synonyms (language-aware).
 
         Uses an LLM to add relevant legal terms that improve retrieval.
         This addresses the semantic gap between user queries and legal documents.
         """
         try:
-            from openai import OpenAI
+            client = self._get_llm_client()
 
-            client = OpenAI(
-                base_url="https://integrate.api.nvidia.com/v1",
-                api_key=os.getenv("NVIDIA_API_KEY"),
-            )
+            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["query_expansion_system"]
 
             response = client.chat.completions.create(
-                model="meta/llama-3.1-70b-instruct",
+                model=self._language_config.llm_model,
                 messages=[{
                     "role": "system",
-                    "content": """You are a legal search query expander for a legal document retrieval system.
-Given a user's legal question, expand it with SPECIFIC legal terminology that appears in court documents.
-
-CRITICAL MAPPINGS (use these exact terms):
-- "transferred/transfer" → "transferred, Section 1407, 28 U.S.C. § 1407, MDL, transferee district, Judicial Panel on Multidistrict Litigation"
-- "court" → "District Court, Circuit Court, forum, venue, transferee forum"
-- "defendants" → "defendants, respondents, named parties"
-- "filed/filing" → "filed, docketed, entered"
-- "damages/injuries" → "damages, injuries, harm, relief sought, causes of action"
-- "class action" → "class action, Rule 23, class certification, numerosity, commonality"
-
-Rules:
-1. ALWAYS include statutory citations (e.g., 28 U.S.C. § 1407, Rule 23)
-2. Include both formal legal terms AND their common equivalents
-3. Return ONLY the expanded query as a single line
-4. Keep under 80 words"""
+                    "content": system_prompt,
                 }, {
                     "role": "user",
                     "content": f"Expand: {query}"
@@ -442,34 +431,22 @@ Rules:
 
     def _generate_hyde_document(self, query: str) -> str:
         """
-        Generate a Hypothetical Document for embedding (HyDE).
+        Generate a Hypothetical Document for embedding (HyDE, language-aware).
 
         Creates a hypothetical answer that would contain the information
         the user is looking for. The embedding of this hypothetical
         document often retrieves better results than the query alone.
         """
         try:
-            from openai import OpenAI
+            client = self._get_llm_client()
 
-            client = OpenAI(
-                base_url="https://integrate.api.nvidia.com/v1",
-                api_key=os.getenv("NVIDIA_API_KEY"),
-            )
+            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["hyde_system"]
 
             response = client.chat.completions.create(
-                model="meta/llama-3.1-70b-instruct",
+                model=self._language_config.llm_model,
                 messages=[{
                     "role": "system",
-                    "content": """You are a legal document generator. Given a question about a legal case,
-write a short excerpt (2-3 sentences) that would appear in a COURT ORDER or JUDICIAL OPINION answering that question.
-
-IMPORTANT: Use the EXACT phrasing that appears in real court documents:
-- For transfers: "IT IS ORDERED that this case is transferred to the [District] pursuant to 28 U.S.C. § 1407"
-- For transfers: "the Panel finds that centralization in the [District] will serve the convenience of the parties"
-- For defendants: "Defendants [Names] are named in this action"
-- For class certification: "The Court certifies a class pursuant to Rule 23(b)(3)"
-
-Write in formal judicial language. Use [placeholders] for specific names/dates."""
+                    "content": system_prompt,
                 }, {
                     "role": "user",
                     "content": f"Write a court document excerpt answering: {query}"
@@ -488,27 +465,21 @@ Write in formal judicial language. Use [placeholders] for specific names/dates."
 
     def _generate_query_variants(self, query: str) -> list[str]:
         """
-        Generate multiple query variants for multi-query retrieval.
+        Generate multiple query variants for multi-query retrieval (language-aware).
 
         Different phrasings can retrieve different relevant documents.
         Results from all variants are combined using RRF.
         """
         try:
-            from openai import OpenAI
+            client = self._get_llm_client()
 
-            client = OpenAI(
-                base_url="https://integrate.api.nvidia.com/v1",
-                api_key=os.getenv("NVIDIA_API_KEY"),
-            )
+            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["multi_query_system"]
 
             response = client.chat.completions.create(
-                model="meta/llama-3.1-70b-instruct",
+                model=self._language_config.llm_model,
                 messages=[{
                     "role": "system",
-                    "content": """Generate 3 alternative phrasings of the legal query.
-Each variant should approach the question from a different angle.
-
-Return ONLY the 3 variants, one per line, no numbering or explanation."""
+                    "content": system_prompt,
                 }, {
                     "role": "user",
                     "content": f"Generate variants for: {query}"
@@ -621,6 +592,7 @@ Return ONLY the 3 variants, one per line, no numbering or explanation."""
                 top_k=effective_config.keyword_top_k,
                 client_id=client_id,
                 document_id=document_id,
+                fts_language=self._language_config.fts_language,
             )
             all_keyword_results.extend(keyword_results)
 
@@ -698,12 +670,14 @@ Return ONLY the 3 variants, one per line, no numbering or explanation."""
         # Sort by RRF score
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
 
-        # Build result list with updated scores
+        # Build result list with copies to avoid mutating cached originals
+        # Preserve original vector score for display purposes
+        from dataclasses import replace as _replace
         results = []
         for chunk_id in sorted_ids:
-            result = result_map[chunk_id]
-            # Update score to RRF score
-            result.score = scores[chunk_id]
+            original = result_map[chunk_id]
+            new_metadata = {**original.metadata, "original_score": original.score}
+            result = _replace(original, score=scores[chunk_id], metadata=new_metadata)
             results.append(result)
 
         return results
@@ -711,7 +685,7 @@ Return ONLY the 3 variants, one per line, no numbering or explanation."""
     def _get_rerank_cache_key(self, query: str, chunk_ids: list[str]) -> str:
         """Generate cache key from query and chunk IDs."""
         content = f"{query}::{','.join(sorted(chunk_ids))}"
-        return hashlib.md5(content.encode()).hexdigest()
+        return hashlib.sha256(content.encode()).hexdigest()
 
     def _should_skip_reranking(self, results: list[SearchResult]) -> bool:
         """
@@ -768,26 +742,30 @@ Return ONLY the 3 variants, one per line, no numbering or explanation."""
 
         if cache_key in self._rerank_cache:
             logger.debug("Rerank cache hit - returning cached results")
+            self._rerank_cache.move_to_end(cache_key)
             return self._rerank_cache[cache_key]
 
         try:
             response = self._reranker.rerank(
-                model="rerank-english-v3.0",
+                model=self._language_config.reranker_model,
                 query=query,
                 documents=[r.content for r in results],
                 top_n=len(results),
             )
 
-            # Reorder results based on reranker scores
+            # Reorder results based on reranker scores (copy to avoid mutating originals)
+            from dataclasses import replace as _replace
             reranked = []
             for item in response.results:
-                result = results[item.index]
-                result.score = item.relevance_score
-                result.metadata["rerank_score"] = item.relevance_score
+                original = results[item.index]
+                new_metadata = {**original.metadata, "rerank_score": item.relevance_score}
+                result = _replace(original, score=item.relevance_score, metadata=new_metadata)
                 reranked.append(result)
 
-            # Cache the result
+            # Cache the result (bounded LRU)
             self._rerank_cache[cache_key] = reranked
+            while len(self._rerank_cache) > self._rerank_cache_max_size:
+                self._rerank_cache.popitem(last=False)
             logger.debug(f"Cached rerank results (cache size: {len(self._rerank_cache)})")
 
             return reranked

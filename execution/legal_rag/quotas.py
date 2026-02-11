@@ -158,37 +158,41 @@ class QuotaManager:
 
     def _get_chunk_count(self, client_id: str) -> int:
         """Get total chunk count for a client."""
-        if not self.store or not self.store._conn:
+        if not self.store:
             return 0
 
         try:
-            with self.store._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM document_chunks WHERE client_id = %s::uuid",
-                    (client_id,)
-                )
-                row = cur.fetchone()
-                return row["count"] if row else 0
-        except Exception:
+            with self.store.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM document_chunks WHERE client_id = %s::uuid",
+                        (client_id,)
+                    )
+                    row = cur.fetchone()
+                    return row["count"] if row else 0
+        except Exception as e:
+            logger.warning(f"Failed to get chunk count for {client_id}: {e}")
             return 0
 
     def _get_queries_today(self, client_id: str) -> int:
         """Get query count for today from usage_daily table."""
-        if not self.store or not self.store._conn:
+        if not self.store:
             return 0
 
         try:
-            with self.store._conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT query_count FROM usage_daily
-                    WHERE client_id = %s::uuid AND date = CURRENT_DATE
-                    """,
-                    (client_id,)
-                )
-                row = cur.fetchone()
-                return row["query_count"] if row else 0
-        except Exception:
+            with self.store.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT query_count FROM usage_daily
+                        WHERE client_id = %s::uuid AND date = CURRENT_DATE
+                        """,
+                        (client_id,)
+                    )
+                    row = cur.fetchone()
+                    return row["query_count"] if row else 0
+        except Exception as e:
+            logger.warning(f"Failed to get query count for {client_id}: {e}")
             return 0
 
     def check_document_quota(
@@ -286,19 +290,20 @@ class QuotaManager:
             self._usage_cache[client_id].chunk_count += chunk_count
 
         # Update usage_daily table
-        if self.store and self.store._conn:
+        if self.store:
             try:
-                with self.store._conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO usage_daily (client_id, date, document_count)
-                        VALUES (%s::uuid, CURRENT_DATE, 1)
-                        ON CONFLICT (client_id, date)
-                        DO UPDATE SET document_count = usage_daily.document_count + 1
-                        """,
-                        (client_id,)
-                    )
-                    self.store._conn.commit()
+                with self.store.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO usage_daily (client_id, date, document_count)
+                            VALUES (%s::uuid, CURRENT_DATE, 1)
+                            ON CONFLICT (client_id, date)
+                            DO UPDATE SET document_count = usage_daily.document_count + 1
+                            """,
+                            (client_id,)
+                        )
+                        conn.commit()
             except Exception as e:
                 logger.warning(f"Failed to update usage: {e}")
 
@@ -308,19 +313,20 @@ class QuotaManager:
             self._usage_cache[client_id].queries_today += 1
 
         # Update usage_daily table
-        if self.store and self.store._conn:
+        if self.store:
             try:
-                with self.store._conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO usage_daily (client_id, date, query_count)
-                        VALUES (%s::uuid, CURRENT_DATE, 1)
-                        ON CONFLICT (client_id, date)
-                        DO UPDATE SET query_count = usage_daily.query_count + 1
-                        """,
-                        (client_id,)
-                    )
-                    self.store._conn.commit()
+                with self.store.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO usage_daily (client_id, date, query_count)
+                            VALUES (%s::uuid, CURRENT_DATE, 1)
+                            ON CONFLICT (client_id, date)
+                            DO UPDATE SET query_count = usage_daily.query_count + 1
+                            """,
+                            (client_id,)
+                        )
+                        conn.commit()
             except Exception as e:
                 logger.warning(f"Failed to update usage: {e}")
 

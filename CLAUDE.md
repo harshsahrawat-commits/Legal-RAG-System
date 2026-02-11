@@ -88,6 +88,57 @@ The system supports event-driven execution via Modal webhooks. Each webhook maps
 
 **All webhook activity streams to Slack in real-time.**
 
+## Known Issues & Learnings
+
+Hard-won discoveries from development and debugging sessions. Follow these to avoid repeating past mistakes.
+
+### Security
+
+**Never hardcode credentials in source files.** Always load database connection strings, API keys, and passwords from environment variables via `.env`. Ensure `.env` is in `.gitignore` and never staged in git. This was discovered via hardcoded Neon DB connection strings with plaintext passwords in `cloud_migrate.py` and `test_neon.py` -- those must be refactored to use `os.getenv()`.
+
+### Embedding Service Architecture
+
+**Three embedding providers exist: Cohere, Voyage AI (`voyage-law-2`), and local BGE-M3.** Voyage AI's `voyage-law-2` is the primary choice for legal documents (6-10% better retrieval accuracy on legal benchmarks). When modifying embedding code, always use the base class pattern to avoid duplicating cache/batch logic across providers. Do not add a new provider without extending the base class.
+
+### Vector Store & Database Connections
+
+**Always use `_ensure_connection()` or the `get_connection()` context manager when accessing the database.** Never access `self._conn` directly in VectorStore methods -- the connection may be stale or the pool may have replaced it. The VectorStore class supports both single-connection and pooled modes; the context manager handles both correctly.
+
+**Multi-tenant isolation uses PostgreSQL Row-Level Security (RLS).** All queries and inserts must include `client_id`. Tenant context is set via `SET app.current_tenant = client_id`. The demo mode uses client ID `00000000-0000-0000-0000-000000000001`. Omitting `client_id` will cause silent data leakage between tenants.
+
+### Cloud Deployment (Streamlit Cloud)
+
+**Streamlit Cloud has a 1GB RAM limit.** Docling is too heavy for cloud deployment -- use PyMuPDF4LLM exclusively (`use_docling` is hardcoded to `False` in the cloud config). Do not re-enable Docling without switching to a higher-memory deployment target.
+
+**All AI/model cache paths must point to `/tmp/` directories** on Streamlit Cloud. Local paths like `~/.cache/` are not writable in that environment.
+
+### Retrieval Pipeline
+
+**Query classification drives pipeline cost.** The retriever classifies queries into four types: `simple`, `factual`, `analytical`, and `standard`. Each type has different pipeline configurations:
+- `analytical` -- full enhancement (query expansion + HyDE + multi-query = 3 LLM calls). Most expensive.
+- `simple` -- skips all enhancement for speed. Cheapest.
+- Always test query classification when modifying retrieval logic to avoid unexpected cost spikes.
+
+**Smart reranking saves 30-50% on Cohere reranking costs.** The retriever skips expensive Cohere reranking API calls when the top result has high confidence (>0.85 score) and a clear lead (>0.15 gap to the second result). Do not remove this optimization without understanding the cost impact.
+
+### LLM Provider
+
+**Uses NVIDIA NIM API (OpenAI-compatible), not Anthropic Claude.** The answer generation model is Qwen 3 235B (`qwen/qwen3-235b-a22b`); contextual chunking uses Llama 3.2 3B (`meta/llama-3.2-3b-instruct`). Both are accessed via the NVIDIA NIM endpoint. Do not assume Anthropic API conventions when modifying LLM integration code.
+
+### Testing
+
+**The project currently uses script-style tests, not pytest.** When adding new tests, create proper pytest tests in a `tests/` directory with mocks for all external services (Cohere, Voyage AI, NVIDIA NIM, PostgreSQL) so tests can run without API keys or live database connections.
+
+### API Security
+
+**CORS origins are configurable via `CORS_ORIGINS` env var** (comma-separated). Defaults to `http://localhost:5173,http://localhost:3000`. Never use `*` in production. Rate limiting is enforced at 60 requests/minute per API key (configurable via `RATE_LIMIT_RPM` env var).
+
+**Document deletion is tenant-isolated.** The `delete_document()` method accepts an optional `client_id` parameter. The API endpoint always passes the authenticated client's ID to prevent cross-tenant deletion.
+
+### Dependencies
+
+**All dependencies are in `requirements.txt`** (cloud-optimized, no Docling). When adding new dependencies, add them to `requirements.txt`. Unused packages (anthropic, llama-index, asyncpg, httpx, aiofiles, tenacity, pypdf, streamlit-chat) have been removed.
+
 ## Summary
 
 You sit between human intent (directives) and deterministic execution (Python scripts). Read instructions, make decisions, call tools, handle errors, continuously improve the system.

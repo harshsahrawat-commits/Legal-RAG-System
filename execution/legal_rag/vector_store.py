@@ -15,6 +15,15 @@ from typing import Optional
 from dataclasses import dataclass
 from contextlib import contextmanager
 
+from .language_config import TenantLanguageConfig, VALID_FTS_CONFIGS
+
+try:
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.pool
+except ImportError:
+    psycopg2 = None  # Will be caught at connect() time
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,13 +108,15 @@ class VectorStore:
     def connect(self) -> None:
         """Establish database connection (with optional pooling)."""
         try:
-            import psycopg2
+            if psycopg2 is None:
+                raise ImportError(
+                    "psycopg2 not installed. Run: pip install psycopg2-binary"
+                )
             from psycopg2.extras import RealDictCursor
-            from psycopg2 import pool
 
             if self.config.use_pooling:
                 # Use connection pooling for production
-                self._pool = pool.ThreadedConnectionPool(
+                self._pool = psycopg2.pool.ThreadedConnectionPool(
                     minconn=self.config.pool_min_connections,
                     maxconn=self.config.pool_max_connections,
                     dsn=self._connection_string,
@@ -558,8 +569,7 @@ class VectorStore:
 
     def initialize_schema(self) -> None:
         """Create tables and indexes if they don't exist."""
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         schema_sql = f"""
         -- Legal documents table
@@ -635,14 +645,16 @@ class VectorStore:
         """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(schema_sql)
-                self._conn.commit()
+                conn.commit()
             logger.info("Schema initialized successfully")
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Schema initialization failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def create_vector_index(self, index_type: str = "ivfflat") -> None:
         """
@@ -652,8 +664,7 @@ class VectorStore:
             index_type: "ivfflat" (default, good for <50K chunks) or
                        "hnsw" (better for 50K+ chunks, slower to build)
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         if index_type == "hnsw":
             index_sql = f"""
@@ -673,14 +684,16 @@ class VectorStore:
             """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(index_sql)
-                self._conn.commit()
+                conn.commit()
             logger.info(f"Vector index created (type: {index_type})")
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Vector index creation failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def create_hnsw_index(self, m: int = 16, ef_construction: int = 64) -> None:
         """
@@ -693,11 +706,10 @@ class VectorStore:
             m: Maximum number of connections per node (16 is good default)
             ef_construction: Size of dynamic candidate list (64 is good default)
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         # Check current chunk count
-        with self._conn.cursor() as cur:
+        with conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) FROM {self.config.table_name}")
             count = cur.fetchone()["count"]
 
@@ -722,19 +734,20 @@ class VectorStore:
         logger.info("This may take several minutes for large datasets...")
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(index_sql)
-                self._conn.commit()
+                conn.commit()
             logger.info("HNSW index created successfully")
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"HNSW index creation failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def get_index_info(self) -> dict:
         """Get information about current vector indexes."""
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         sql = """
         SELECT
@@ -746,7 +759,7 @@ class VectorStore:
         """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, (self.config.table_name,))
                 rows = cur.fetchall()
 
@@ -765,6 +778,8 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to get index info: {e}")
             return {}
+        finally:
+            self._release_connection(conn)
 
     def insert_document(
         self,
@@ -778,8 +793,7 @@ class VectorStore:
         metadata: Optional[dict] = None,
     ) -> None:
         """Insert a document record."""
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         sql = """
         INSERT INTO legal_documents
@@ -794,7 +808,7 @@ class VectorStore:
         """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, (
                     document_id,
                     client_id,
@@ -805,11 +819,13 @@ class VectorStore:
                     page_count,
                     json.dumps(metadata or {}),
                 ))
-                self._conn.commit()
+                conn.commit()
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Document insert failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def insert_chunks(
         self,
@@ -825,8 +841,7 @@ class VectorStore:
             embeddings: Corresponding embedding vectors
             client_id: Optional client ID for multi-tenant isolation
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         if len(chunks) != len(embeddings):
             raise ValueError(
@@ -880,7 +895,7 @@ class VectorStore:
             ))
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 # Use execute_values with template for proper type casting
                 execute_values(
                     cur,
@@ -889,12 +904,14 @@ class VectorStore:
                     template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s)",
                     page_size=1000,
                 )
-                self._conn.commit()
+                conn.commit()
             logger.info(f"Batch inserted {len(chunks)} chunks")
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Chunk insert failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def search(
         self,
@@ -917,23 +934,27 @@ class VectorStore:
         Returns:
             List of SearchResult objects
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         # Build query with optional filters
         filters = []
-        params = [query_embedding, top_k]
+        filter_params = []
 
         if client_id:
             filters.append("client_id = %s::uuid")
-            params.insert(-1, client_id)
+            filter_params.append(client_id)
 
         if document_id:
             filters.append("document_id = %s::uuid")
-            params.insert(-1, document_id)
+            filter_params.append(document_id)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
 
+        columns = [
+            "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
+            "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
+            "level", "legal_references", "context_before", "context_after", "score"
+        ]
         sql = f"""
         SELECT
             id as chunk_id,
@@ -956,39 +977,39 @@ class VectorStore:
         LIMIT %s
         """
 
-        # Adjust params for the query
-        final_params = [query_embedding]
-        if client_id:
-            final_params.append(client_id)
-        if document_id:
-            final_params.append(document_id)
-        final_params.extend([query_embedding, top_k])
+        # Build params in order: score calc embedding, filters, order embedding, limit
+        final_params = [query_embedding] + filter_params + [query_embedding, top_k]
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, final_params)
                 rows = cur.fetchall()
 
             results = []
             for row in rows:
-                if row["score"] >= min_score:
+                # Handle both RealDictRow and tuple
+                if hasattr(row, 'keys'):
+                    row_dict = dict(row)
+                else:
+                    row_dict = dict(zip(columns, row))
+                if row_dict["score"] >= min_score:
                     results.append(SearchResult(
-                        chunk_id=str(row["chunk_id"]),
-                        document_id=str(row["document_id"]),
-                        content=row["content"],
-                        section_title=row["section_title"],
-                        hierarchy_path=row["hierarchy_path"],
-                        page_numbers=row["page_numbers"] or [],
-                        score=float(row["score"]),
+                        chunk_id=str(row_dict["chunk_id"]),
+                        document_id=str(row_dict["document_id"]),
+                        content=row_dict["content"],
+                        section_title=row_dict["section_title"],
+                        hierarchy_path=row_dict["hierarchy_path"],
+                        page_numbers=row_dict["page_numbers"] or [],
+                        score=float(row_dict["score"]),
                         metadata={
-                            "level": row["level"],
-                            "legal_references": row["legal_references"],
-                            "context_before": row["context_before"],
-                            "context_after": row["context_after"],
+                            "level": row_dict["level"],
+                            "legal_references": row_dict["legal_references"],
+                            "context_before": row_dict["context_before"],
+                            "context_after": row_dict["context_after"],
                         },
-                        paragraph_start=row.get("paragraph_start"),
-                        paragraph_end=row.get("paragraph_end"),
-                        original_paragraph_numbers=row.get("original_paragraph_numbers") or [],
+                        paragraph_start=row_dict.get("paragraph_start"),
+                        paragraph_end=row_dict.get("paragraph_end"),
+                        original_paragraph_numbers=row_dict.get("original_paragraph_numbers") or [],
                     ))
 
             return results
@@ -996,6 +1017,8 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def keyword_search(
         self,
@@ -1003,6 +1026,7 @@ class VectorStore:
         top_k: int = 10,
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        fts_language: str = "english",
     ) -> list[SearchResult]:
         """
         Full-text keyword search using PostgreSQL ts_rank.
@@ -1012,28 +1036,34 @@ class VectorStore:
             top_k: Number of results to return
             client_id: Optional filter by client
             document_id: Optional filter by document
+            fts_language: PostgreSQL FTS config name ("english" or "greek")
 
         Returns:
             List of SearchResult objects
         """
-        if not self._conn:
-            self.connect()
+        # Validate fts_language against whitelist to prevent SQL injection
+        if fts_language not in VALID_FTS_CONFIGS:
+            logger.warning(f"Invalid FTS language '{fts_language}', falling back to 'english'")
+            fts_language = "english"
 
-        filters = []
-        params = [query]
+        conn = self._ensure_connection()
+
+        filter_params = []
+        where_extra = ""
 
         if client_id:
-            filters.append("client_id = %s::uuid")
-            params.append(client_id)
+            where_extra += " AND client_id = %s::uuid"
+            filter_params.append(client_id)
 
         if document_id:
-            filters.append("document_id = %s::uuid")
-            params.append(document_id)
+            where_extra += " AND document_id = %s::uuid"
+            filter_params.append(document_id)
 
-        where_clause = ""
-        if filters:
-            where_clause = "AND " + " AND ".join(filters)
-
+        kw_columns = [
+            "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
+            "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
+            "level", "score"
+        ]
         sql = f"""
         SELECT
             id as chunk_id,
@@ -1046,41 +1076,48 @@ class VectorStore:
             paragraph_end,
             original_paragraph_numbers,
             level,
-            ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) as score
+            ts_rank(to_tsvector(%s, content), plainto_tsquery(%s, %s)) as score
         FROM {self.config.table_name}
-        WHERE to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-        {where_clause}
+        WHERE to_tsvector(%s, content) @@ plainto_tsquery(%s, %s)
+        {where_extra}
         ORDER BY score DESC
         LIMIT %s
         """
 
-        params = [query, query] + params[1:] + [top_k]
+        params = [fts_language, fts_language, query, fts_language, fts_language, query] + filter_params + [top_k]
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
 
-            return [
-                SearchResult(
-                    chunk_id=str(row["chunk_id"]),
-                    document_id=str(row["document_id"]),
-                    content=row["content"],
-                    section_title=row["section_title"],
-                    hierarchy_path=row["hierarchy_path"],
-                    page_numbers=row["page_numbers"] or [],
-                    score=float(row["score"]),
-                    metadata={"level": row["level"]},
-                    paragraph_start=row.get("paragraph_start"),
-                    paragraph_end=row.get("paragraph_end"),
-                    original_paragraph_numbers=row.get("original_paragraph_numbers") or [],
-                )
-                for row in rows
-            ]
+            results = []
+            for row in rows:
+                # Handle both RealDictRow and tuple
+                if hasattr(row, 'keys'):
+                    row_dict = dict(row)
+                else:
+                    row_dict = dict(zip(kw_columns, row))
+                results.append(SearchResult(
+                    chunk_id=str(row_dict["chunk_id"]),
+                    document_id=str(row_dict["document_id"]),
+                    content=row_dict["content"],
+                    section_title=row_dict["section_title"],
+                    hierarchy_path=row_dict["hierarchy_path"],
+                    page_numbers=row_dict["page_numbers"] or [],
+                    score=float(row_dict["score"]),
+                    metadata={"level": row_dict["level"]},
+                    paragraph_start=row_dict.get("paragraph_start"),
+                    paragraph_end=row_dict.get("paragraph_end"),
+                    original_paragraph_numbers=row_dict.get("original_paragraph_numbers") or [],
+                ))
+            return results
 
         except Exception as e:
             logger.error(f"Keyword search failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def search_by_paragraph(
         self,
@@ -1099,8 +1136,7 @@ class VectorStore:
         Returns:
             List of SearchResult objects containing that paragraph
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         filters = ["document_id = %s::uuid"]
         params = [document_id, paragraph_number, paragraph_number]
@@ -1141,31 +1177,43 @@ class VectorStore:
             final_params.append(client_id)
         final_params.extend([paragraph_number, paragraph_number])
 
+        ctx_columns = [
+            "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
+            "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
+            "level", "score"
+        ]
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, final_params)
                 rows = cur.fetchall()
 
-            return [
-                SearchResult(
-                    chunk_id=str(row["chunk_id"]),
-                    document_id=str(row["document_id"]),
-                    content=row["content"],
-                    section_title=row["section_title"],
-                    hierarchy_path=row["hierarchy_path"],
-                    page_numbers=row["page_numbers"] or [],
-                    score=float(row["score"]),
-                    metadata={"level": row["level"]},
-                    paragraph_start=row.get("paragraph_start"),
-                    paragraph_end=row.get("paragraph_end"),
-                    original_paragraph_numbers=row.get("original_paragraph_numbers") or [],
-                )
-                for row in rows
-            ]
+            results = []
+            for row in rows:
+                # Handle both RealDictRow and tuple
+                if hasattr(row, 'keys'):
+                    row_dict = dict(row)
+                else:
+                    row_dict = dict(zip(ctx_columns, row))
+                results.append(SearchResult(
+                    chunk_id=str(row_dict["chunk_id"]),
+                    document_id=str(row_dict["document_id"]),
+                    content=row_dict["content"],
+                    section_title=row_dict["section_title"],
+                    hierarchy_path=row_dict["hierarchy_path"],
+                    page_numbers=row_dict["page_numbers"] or [],
+                    score=float(row_dict["score"]),
+                    metadata={"level": row_dict["level"]},
+                    paragraph_start=row_dict.get("paragraph_start"),
+                    paragraph_end=row_dict.get("paragraph_end"),
+                    original_paragraph_numbers=row_dict.get("original_paragraph_numbers") or [],
+                ))
+            return results
 
         except Exception as e:
             logger.error(f"Paragraph search failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def migrate_add_paragraph_columns(self) -> bool:
         """
@@ -1177,8 +1225,7 @@ class VectorStore:
         Returns:
             True if migration succeeded, False otherwise
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         migration_sql = f"""
         -- Add paragraph tracking columns if they don't exist
@@ -1210,37 +1257,105 @@ class VectorStore:
         """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(migration_sql)
-                self._conn.commit()
+                conn.commit()
             logger.info("Migration completed: Added paragraph tracking columns")
             return True
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Migration failed: {e}")
             return False
+        finally:
+            self._release_connection(conn)
 
-    def delete_document(self, document_id: str) -> None:
-        """Delete a document and all its chunks."""
-        if not self._conn:
-            self.connect()
+    def delete_document(self, document_id: str, client_id: Optional[str] = None) -> bool:
+        """
+        Delete a document and all its chunks.
 
-        sql = "DELETE FROM legal_documents WHERE id = %s::uuid"
+        Args:
+            document_id: The document UUID to delete
+            client_id: If provided, only delete if document belongs to this tenant
+
+        Returns:
+            True if a document was deleted, False if not found (or wrong tenant)
+        """
+        conn = self._ensure_connection()
+
+        if client_id:
+            sql = "DELETE FROM legal_documents WHERE id = %s::uuid AND client_id = %s::uuid"
+            params = (document_id, client_id)
+        else:
+            sql = "DELETE FROM legal_documents WHERE id = %s::uuid"
+            params = (document_id,)
 
         try:
-            with self._conn.cursor() as cur:
-                cur.execute(sql, (document_id,))
-                self._conn.commit()
-            logger.info(f"Deleted document {document_id}")
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                deleted = cur.rowcount > 0
+                conn.commit()
+            if deleted:
+                logger.info(f"Deleted document {document_id}")
+            else:
+                logger.warning(f"Document {document_id} not found (or wrong tenant)")
+            return deleted
         except Exception as e:
-            self._conn.rollback()
+            conn.rollback()
             logger.error(f"Document deletion failed: {e}")
             raise
+        finally:
+            self._release_connection(conn)
+
+    def get_document_titles(
+        self,
+        document_ids: list[str],
+        client_id: Optional[str] = None,
+    ) -> dict[str, str]:
+        """
+        Look up document titles by IDs.
+
+        Args:
+            document_ids: List of document UUIDs to look up
+            client_id: Optional tenant filter for isolation
+
+        Returns:
+            Dict mapping document_id to title
+        """
+        if not document_ids:
+            return {}
+
+        conn = self._ensure_connection()
+
+        placeholders = ",".join(["%s::uuid"] * len(document_ids))
+        sql = f"SELECT id, title FROM legal_documents WHERE id IN ({placeholders})"
+        params = list(document_ids)
+
+        if client_id:
+            sql += " AND client_id = %s::uuid"
+            params.append(client_id)
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+
+            result = {}
+            for row in rows:
+                if hasattr(row, "keys"):
+                    result[str(row["id"])] = row["title"]
+                else:
+                    result[str(row[0])] = row[1]
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get document titles: {e}")
+            return {}
+        finally:
+            self._release_connection(conn)
 
     def get_document_chunks(self, document_id: str) -> list[dict]:
         """Get all chunks for a document."""
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
         sql = f"""
         SELECT * FROM {self.config.table_name}
@@ -1249,12 +1364,14 @@ class VectorStore:
         """
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, (document_id,))
                 return cur.fetchall()
         except Exception as e:
             logger.error(f"Failed to get chunks: {e}")
             raise
+        finally:
+            self._release_connection(conn)
 
     def list_documents(self, client_id: Optional[str] = None) -> list[dict]:
         """
@@ -1266,12 +1383,12 @@ class VectorStore:
         Returns:
             List of document dictionaries with id, title, type, etc.
         """
-        if not self._conn:
-            self.connect()
+        conn = self._ensure_connection()
 
-        sql = """
-        SELECT id, title, document_type, jurisdiction, page_count,
-               metadata, created_at
+        columns = ["id", "title", "document_type", "jurisdiction", "page_count",
+                   "metadata", "created_at"]
+        sql = f"""
+        SELECT {', '.join(columns)}
         FROM legal_documents
         """
         params = []
@@ -1281,13 +1398,167 @@ class VectorStore:
         sql += " ORDER BY created_at DESC"
 
         try:
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute(sql, params if params else None)
                 rows = cur.fetchall()
-            return [dict(row) for row in rows]
+            # Handle both RealDictRow and tuple
+            result = []
+            for row in rows:
+                if hasattr(row, 'keys'):
+                    result.append(dict(row))
+                else:
+                    result.append(dict(zip(columns, row)))
+            return result
         except Exception as e:
             logger.error(f"Failed to list documents: {e}")
             raise
+        finally:
+            self._release_connection(conn)
+
+    # =========================================================================
+    # Tenant Language Configuration
+    # =========================================================================
+
+    def initialize_tenant_config_schema(self) -> None:
+        """Create tenant_config table for per-tenant language settings."""
+        conn = self._ensure_connection()
+
+        sql = """
+        CREATE TABLE IF NOT EXISTS tenant_config (
+            client_id UUID PRIMARY KEY,
+            language VARCHAR(5) NOT NULL DEFAULT 'en',
+            embedding_model VARCHAR(100) DEFAULT 'voyage-law-2',
+            embedding_provider VARCHAR(20) DEFAULT 'voyage',
+            llm_model VARCHAR(100) DEFAULT 'qwen/qwen3-235b-a22b',
+            reranker_model VARCHAR(100) DEFAULT 'rerank-multilingual-v3.0',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                conn.commit()
+            logger.info("Tenant config schema initialized")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Tenant config schema init failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def get_tenant_config(self, client_id: str) -> Optional[TenantLanguageConfig]:
+        """
+        Get language configuration for a tenant.
+
+        Args:
+            client_id: The tenant UUID
+
+        Returns:
+            TenantLanguageConfig if found, None otherwise
+        """
+        conn = self._ensure_connection()
+
+        sql = """
+        SELECT language, embedding_model, embedding_provider,
+               llm_model, reranker_model
+        FROM tenant_config
+        WHERE client_id = %s::uuid
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (client_id,))
+                row = cur.fetchone()
+
+            if not row:
+                return None
+
+            from .language_config import SUPPORTED_LANGUAGES
+            lang = row["language"] if isinstance(row, dict) else row[0]
+            lang_info = SUPPORTED_LANGUAGES.get(lang, SUPPORTED_LANGUAGES["en"])
+
+            return TenantLanguageConfig(
+                language=lang,
+                embedding_model=row["embedding_model"] if isinstance(row, dict) else row[1],
+                embedding_provider=row["embedding_provider"] if isinstance(row, dict) else row[2],
+                llm_model=row["llm_model"] if isinstance(row, dict) else row[3],
+                reranker_model=row["reranker_model"] if isinstance(row, dict) else row[4],
+                fts_language=lang_info["fts_config"],
+                chars_per_token=lang_info["chars_per_token"],
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to get tenant config: {e}")
+            return None
+        finally:
+            self._release_connection(conn)
+
+    def set_tenant_config(self, client_id: str, config: TenantLanguageConfig) -> None:
+        """
+        Set or update language configuration for a tenant.
+
+        Args:
+            client_id: The tenant UUID
+            config: The language configuration to set
+        """
+        conn = self._ensure_connection()
+
+        sql = """
+        INSERT INTO tenant_config
+            (client_id, language, embedding_model, embedding_provider,
+             llm_model, reranker_model)
+        VALUES (%s::uuid, %s, %s, %s, %s, %s)
+        ON CONFLICT (client_id) DO UPDATE SET
+            language = EXCLUDED.language,
+            embedding_model = EXCLUDED.embedding_model,
+            embedding_provider = EXCLUDED.embedding_provider,
+            llm_model = EXCLUDED.llm_model,
+            reranker_model = EXCLUDED.reranker_model,
+            updated_at = NOW()
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (
+                    client_id,
+                    config.language,
+                    config.embedding_model,
+                    config.embedding_provider,
+                    config.llm_model,
+                    config.reranker_model,
+                ))
+                conn.commit()
+            logger.info(f"Tenant config set for {client_id}: lang={config.language}")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to set tenant config: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def create_greek_fts_index(self) -> None:
+        """Create Greek FTS index on-demand (when first Greek tenant is created)."""
+        conn = self._ensure_connection()
+
+        sql = f"""
+        CREATE INDEX IF NOT EXISTS idx_chunks_fts_greek
+            ON {self.config.table_name}
+            USING GIN (to_tsvector('greek', content));
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                conn.commit()
+            logger.info("Greek FTS index created")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to create Greek FTS index: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
 
 
 # CLI for testing
@@ -1349,8 +1620,10 @@ if __name__ == "__main__":
             print(f"Unknown command: {command}")
             print("Available commands: setup-auth, enable-rls, create-demo-key, test-rls")
     else:
+        import re as _re
         print("Vector store initialized successfully")
-        print(f"Connection: {store._connection_string}")
+        masked = _re.sub(r'://[^@]+@', '://***:***@', store._connection_string)
+        print(f"Connection: {masked}")
         print("\nCommands:")
         print("  python vector_store.py setup-auth     - Create auth tables")
         print("  python vector_store.py enable-rls     - Enable Row-Level Security")

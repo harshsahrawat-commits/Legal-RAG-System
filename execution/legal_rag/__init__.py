@@ -13,20 +13,25 @@ Architecture follows the Flowkart 3-layer pattern:
 - Layer 3 (Execution): This module and its submodules
 """
 
+from .language_config import TenantLanguageConfig, SUPPORTED_LANGUAGES
 from .document_parser import LegalDocumentParser
 from .chunker import LegalChunker
-from .embeddings import EmbeddingService
+from .embeddings import BaseEmbeddingService, EmbeddingService, VoyageEmbeddingService
 from .vector_store import VectorStore
 from .retriever import HybridRetriever
 from .citation import CitationExtractor
 
 __all__ = [
+    "TenantLanguageConfig",
+    "SUPPORTED_LANGUAGES",
     "LegalDocumentParser",
     "LegalChunker",
+    "BaseEmbeddingService",
     "EmbeddingService",
+    "VoyageEmbeddingService",
     "VectorStore",
     "HybridRetriever",
     "CitationExtractor",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

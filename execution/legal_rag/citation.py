@@ -13,6 +13,8 @@ from typing import Optional
 from dataclasses import dataclass
 
 from .vector_store import SearchResult
+from .language_config import TenantLanguageConfig
+from .language_patterns import CITATION_SECTION_PATTERNS, LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class Citation:
     document_id: str
     relevance_score: float
     paragraph_numbers: list[int] = None  # Paragraph numbers for precise citation
+    language: str = "en"  # Language for formatting labels
 
     def short_format(self) -> str:
         """Short inline citation format."""
@@ -73,18 +76,20 @@ class Citation:
         return f"¶¶{', '.join(map(str, self.paragraph_numbers))}"
 
     def _format_pages(self) -> str:
-        """Format page numbers."""
+        """Format page numbers using language-appropriate labels."""
+        labels = LABELS.get(self.language, LABELS["en"])
+
         if not self.page_numbers:
-            return "Page N/A"
+            return labels["page_na"]
 
         if len(self.page_numbers) == 1:
-            return f"p. {self.page_numbers[0]}"
+            return f"{labels['page_single']} {self.page_numbers[0]}"
 
         # Check if consecutive
         if self._is_consecutive(self.page_numbers):
-            return f"pp. {self.page_numbers[0]}-{self.page_numbers[-1]}"
+            return f"{labels['page_range']} {self.page_numbers[0]}-{self.page_numbers[-1]}"
 
-        return f"pp. {', '.join(map(str, self.page_numbers))}"
+        return f"{labels['page_range']} {', '.join(map(str, self.page_numbers))}"
 
     def _is_consecutive(self, nums: list[int]) -> bool:
         """Check if numbers are consecutive."""
@@ -131,40 +136,50 @@ class CitationExtractor:
     Extracts and formats citations from search results.
 
     Provides consistent citation formatting for legal documents,
-    supporting various output formats.
+    supporting various output formats and languages.
     """
 
-    def __init__(self, document_titles: Optional[dict] = None):
+    def __init__(
+        self,
+        document_titles: Optional[dict] = None,
+        language_config: Optional[TenantLanguageConfig] = None,
+    ):
         """
         Initialize citation extractor.
 
         Args:
             document_titles: Optional mapping of document_id to title
+            language_config: Per-tenant language configuration. Defaults to English.
         """
         self._document_titles = document_titles or {}
+        self._language_config = language_config or TenantLanguageConfig.for_language("en")
+        self._lang = self._language_config.language
 
     def extract(
         self,
         results: list[SearchResult],
         document_title: Optional[str] = None,
+        document_titles: Optional[dict] = None,
     ) -> list[CitedContent]:
         """
         Extract citations from search results.
 
         Args:
             results: List of search results
-            document_title: Optional document title override
+            document_title: Optional document title override (single title for all)
+            document_titles: Optional mapping of document_id to title (per-document override)
 
         Returns:
             List of CitedContent objects with formatted citations
         """
+        titles = document_titles or self._document_titles
         cited_contents = []
 
         for result in results:
             # Get document title
             title = (
                 document_title or
-                self._document_titles.get(result.document_id) or
+                titles.get(result.document_id) or
                 self._extract_title_from_path(result.hierarchy_path) or
                 "Document"
             )
@@ -175,6 +190,18 @@ class CitationExtractor:
             # Get paragraph numbers from SearchResult field
             paragraph_numbers = getattr(result, "original_paragraph_numbers", None) or []
 
+            # Use display score: prefer rerank_score > original_score > RRF score
+            # rerank_score is 0-1 from Cohere, original_score is vector similarity
+            # Use explicit None checks since 0.0 is a valid score but falsy
+            rerank = result.metadata.get("rerank_score")
+            original = result.metadata.get("original_score")
+            if rerank is not None:
+                display_score = rerank
+            elif original is not None:
+                display_score = original
+            else:
+                display_score = result.score
+
             citation = Citation(
                 document_title=title,
                 section=section,
@@ -182,8 +209,9 @@ class CitationExtractor:
                 hierarchy_path=result.hierarchy_path,
                 chunk_id=result.chunk_id,
                 document_id=result.document_id,
-                relevance_score=result.score,
+                relevance_score=display_score,
                 paragraph_numbers=paragraph_numbers,
+                language=self._lang,
             )
 
             cited_content = CitedContent(
@@ -208,18 +236,12 @@ class CitationExtractor:
         return None
 
     def _extract_section(self, hierarchy_path: str) -> str:
-        """Extract section reference from hierarchy path."""
+        """Extract section reference from hierarchy path (language-aware)."""
         if not hierarchy_path:
             return ""
 
-        # Look for common patterns
-        patterns = [
-            (r"Article[_\s]+([IVXLCDM]+|\d+)", "Article {}"),
-            (r"Section[_\s]+(\d+(?:\.\d+)*)", "Section {}"),
-            (r"Clause[_\s]+(\d+(?:\.\d+)*)", "Clause {}"),
-            (r"Part[_\s]+([IVXLCDM]+|\d+)", "Part {}"),
-            (r"Chapter[_\s]+(\d+)", "Chapter {}"),
-        ]
+        # Use language-specific patterns
+        patterns = CITATION_SECTION_PATTERNS.get(self._lang, CITATION_SECTION_PATTERNS["en"])
 
         for pattern, template in patterns:
             match = re.search(pattern, hierarchy_path, re.IGNORECASE)
@@ -251,8 +273,9 @@ class CitationExtractor:
         if not cited_contents:
             return response_text
 
-        # Build sources section
-        sources = "\n\n---\n**Sources:**\n"
+        # Build sources section with language-appropriate label
+        labels = LABELS.get(self._lang, LABELS["en"])
+        sources = f"\n\n---\n**{labels['sources']}**\n"
         seen_citations = set()
 
         for i, cc in enumerate(cited_contents, 1):

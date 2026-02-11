@@ -15,10 +15,8 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-# Set ALL possible AI cache paths to a writable directory for cloud deployment
+# Set cache paths to a writable directory for cloud deployment
 os.environ["HF_HOME"] = "/tmp/huggingface"
-os.environ["MODELSCOPE_CACHE"] = "/tmp/modelscope"
-os.environ["DOCLING_ARTIFACTS_PATH"] = "/tmp/docling"
 os.environ["XDG_CACHE_HOME"] = "/tmp/cache"
 
 # Add parent directory to path for imports
@@ -112,7 +110,7 @@ def render_login_page():
 
             except Exception as e:
                 logger.error(f"Login error: {e}")
-                st.error(f"Login failed: {str(e)}")
+                st.error("Login failed. Please check your API key and try again.")
 
         st.markdown("---")
         st.markdown(
@@ -151,24 +149,46 @@ def init_services():
         from execution.legal_rag.vector_store import VectorStore
         from execution.legal_rag.retriever import HybridRetriever
         from execution.legal_rag.citation import CitationExtractor
+        from execution.legal_rag.metrics import get_metrics_collector
+        from execution.legal_rag.quotas import get_quota_manager
+        from execution.legal_rag.language_config import TenantLanguageConfig
 
-        st.session_state.parser = LegalDocumentParser()
-        st.session_state.chunker = LegalChunker()
-        st.session_state.embeddings = get_embedding_service(provider="voyage")  # voyage-law-2
-        st.session_state.store = VectorStore()
-        st.session_state.store.connect()
-        st.session_state.store.initialize_schema()
-        st.session_state.retriever = HybridRetriever(
-            st.session_state.store,
-            st.session_state.embeddings,
-        )
-        st.session_state.citation_extractor = CitationExtractor()
-        st.session_state.initialized = True
-        st.session_state.documents = {}
-        st.session_state.chat_history = []
+        # Initialize store first to load tenant config
+        store = VectorStore()
+        store.connect()
+        store.initialize_schema()
+        st.session_state.store = store
 
         # Get the current client ID (from auth or demo mode)
         client_id = get_current_client_id()
+
+        # Load tenant language config from DB (or use English defaults)
+        try:
+            store.initialize_tenant_config_schema()
+            lang_config = store.get_tenant_config(client_id)
+        except Exception:
+            lang_config = None
+        if lang_config is None:
+            lang_config = TenantLanguageConfig.for_language("en")
+        st.session_state.language_config = lang_config
+
+        st.session_state.parser = LegalDocumentParser(language_config=lang_config)
+        st.session_state.chunker = LegalChunker(language_config=lang_config)
+        st.session_state.embeddings = get_embedding_service(
+            provider=lang_config.embedding_provider,
+            language_config=lang_config,
+        )
+        st.session_state.retriever = HybridRetriever(
+            store,
+            st.session_state.embeddings,
+            language_config=lang_config,
+        )
+        st.session_state.citation_extractor = CitationExtractor(language_config=lang_config)
+        st.session_state.metrics = get_metrics_collector()
+        st.session_state.quotas = get_quota_manager(store)
+        st.session_state.initialized = True
+        st.session_state.documents = {}
+        st.session_state.chat_history = []
 
         # Set tenant context for Row-Level Security (if RLS is enabled)
         try:
@@ -205,6 +225,20 @@ def init_services():
 
 def process_document(uploaded_file) -> dict:
     """Process an uploaded PDF document."""
+    import time as _time
+    from execution.legal_rag.quotas import QuotaExceededError
+
+    ingest_start = _time.time()
+    client_id = get_current_client_id()
+    tier = st.session_state.get("client_tier", "default")
+
+    # Check document quota before processing
+    try:
+        st.session_state.quotas.check_document_quota(client_id, tier=tier)
+    except QuotaExceededError as e:
+        st.error(f"Upload blocked: {e}")
+        return None
+
     # Save to temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.getvalue())
@@ -266,6 +300,16 @@ def process_document(uploaded_file) -> dict:
                 details={"title": parsed.metadata.title, "chunks": len(chunks)}
             )
 
+        # Record metrics and quota usage
+        ingest_duration = (_time.time() - ingest_start) * 1000
+        st.session_state.metrics.record_ingestion(
+            client_id=client_id,
+            document_id=parsed.metadata.document_id,
+            chunks_count=len(chunks),
+            duration_ms=ingest_duration,
+        )
+        st.session_state.quotas.record_document_upload(client_id, chunk_count=len(chunks))
+
         # Store document info in session
         doc_info = {
             "id": parsed.metadata.document_id,
@@ -304,10 +348,22 @@ def query_documents(query: str, document_id: str = None) -> dict:
         dict with 'answer', 'sources', and 'latency_ms'
     """
     import time
+    from execution.legal_rag.quotas import QuotaExceededError
     start_time = time.time()
 
     # Get current client ID for multi-tenant isolation
     client_id = get_current_client_id()
+    tier = st.session_state.get("client_tier", "default")
+
+    # Check quota before querying
+    try:
+        st.session_state.quotas.check_query_quota(client_id, tier=tier)
+    except QuotaExceededError as e:
+        return {
+            "answer": f"Query limit reached: {e}. Please try again later or upgrade your plan.",
+            "sources": [],
+            "latency_ms": 0,
+        }
 
     # Log the query for audit
     st.session_state.store.log_audit(
@@ -316,14 +372,22 @@ def query_documents(query: str, document_id: str = None) -> dict:
         details={"query": query[:200]}
     )
 
+    # Track metrics
+    metrics = st.session_state.metrics
+
     # Retrieve relevant chunks with client_id for multi-tenant isolation
     # Using top_k=10 to give enhanced retrieval (query expansion, HyDE) more room
-    results = st.session_state.retriever.retrieve(
-        query=query,
-        client_id=client_id,
-        document_id=document_id,
-        top_k=10,
-    )
+    with metrics.track_query(client_id, query) as tracker:
+        results = st.session_state.retriever.retrieve(
+            query=query,
+            client_id=client_id,
+            document_id=document_id,
+            top_k=10,
+        )
+        tracker.set_results(len(results))
+
+    # Record query for quota tracking
+    st.session_state.quotas.record_query(client_id)
 
     # Filter out document summary chunks (they show "Page N/A")
     results = [r for r in results if r.hierarchy_path != "Document"]
@@ -352,24 +416,21 @@ def query_documents(query: str, document_id: str = None) -> dict:
     # Generate response using NVIDIA NIM API (OpenAI-compatible)
     try:
         from openai import OpenAI
+        from execution.legal_rag.language_patterns import LLM_PROMPTS
+
+        lang_config = st.session_state.get("language_config")
+        lang = lang_config.language if lang_config else "en"
 
         client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=os.getenv("NVIDIA_API_KEY"),
+            timeout=30.0,
         )
 
-        # Use detailed model for comprehensive, accurate answers
-        model = "meta/llama-3.1-70b-instruct"
+        # Use tenant-configured model
+        model = lang_config.llm_model if lang_config else "qwen/qwen3-235b-a22b"
         max_tokens = 1500
-        system_prompt = """You are a legal research assistant. Answer the question based ONLY on the provided sources.
-
-REQUIREMENTS:
-1. Every claim must cite a source using the format [N] (e.g. [1], [2])
-2. Group citations when possible (e.g. [1, 2])
-3. If information is not in the sources, say "This information is not in the provided documents"
-4. Be precise and accurate - this is for legal work
-5. Quote exact language when relevant, using quotation marks
-6. Note any limitations or caveats"""
+        system_prompt = LLM_PROMPTS.get(lang, LLM_PROMPTS["en"])["rag_system"]
 
         generation_start = time.time()
         response = client.chat.completions.create(
