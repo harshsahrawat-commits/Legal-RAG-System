@@ -147,6 +147,8 @@ export default function ChatMessage({ message }: Props) {
 
   const renderAssistantContent = () => {
     if (!parts) return null
+    // During streaming: show nothing until first token arrives (skeleton covers this)
+    if (message.content === '') return null
 
     // Check if the content has any markdown formatting
     const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)

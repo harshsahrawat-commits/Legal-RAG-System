@@ -81,12 +81,15 @@ QUERY_CONFIGS = {
 
 class QueryResultCache:
     """
-    Cache retrieval results with semantic similarity matching.
+    Cache retrieval results and generated answers with semantic similarity matching.
 
     If a new query is semantically similar to a cached query (>threshold),
     return cached results instead of re-running the full pipeline.
 
-    This can save ~2000ms for similar/repeat queries.
+    Full-pipeline caching stores the generated answer + sources alongside
+    retrieval results, eliminating all LLM calls on cache hits.
+
+    Cache is invalidated per-client when documents are uploaded or deleted.
     """
 
     def __init__(
@@ -94,14 +97,15 @@ class QueryResultCache:
         embedding_service,
         similarity_threshold: float = 0.92,
         max_size: int = 500,
-        ttl_seconds: int = 3600,  # 1 hour
+        ttl_seconds: int = 86400,  # 24 hours (legal docs are static)
     ):
         self._embeddings = embedding_service
         self._threshold = similarity_threshold
         self._max_size = max_size
         self._ttl = ttl_seconds
 
-        # LRU cache: {embedding_tuple: (query, results, timestamp)}
+        # LRU cache: {cache_key: (query, client_id, doc_id, results, answer_data, timestamp)}
+        # answer_data is Optional[dict] with keys: answer, sources (serialized SourceInfo list)
         self._cache = OrderedDict()
         # Store embeddings separately for comparison
         self._embedding_cache = {}  # {cache_key: embedding}
@@ -124,11 +128,12 @@ class QueryResultCache:
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
         query_embedding: Optional[list[float]] = None,
-    ) -> Optional[list[SearchResult]]:
+    ) -> Optional[tuple]:
         """
         Check cache for semantically similar query.
 
-        Returns cached results if found, None otherwise.
+        Returns (results, answer_data) tuple if found, None otherwise.
+        answer_data may be None if only retrieval results were cached.
         """
         if not self._cache:
             return None
@@ -139,7 +144,7 @@ class QueryResultCache:
 
         # Check each cached query for similarity
         expired_keys = []
-        for cache_key, (cached_query, cached_client, cached_doc, results, timestamp) in self._cache.items():
+        for cache_key, (cached_query, cached_client, cached_doc, results, answer_data, timestamp) in self._cache.items():
             # Check TTL
             if current_time - timestamp > self._ttl:
                 expired_keys.append(cache_key)
@@ -159,7 +164,7 @@ class QueryResultCache:
                 logger.info(f"Cache hit! Query similarity: {similarity:.3f} >= {self._threshold}")
                 # Move to end (most recently used)
                 self._cache.move_to_end(cache_key)
-                return results
+                return (results, answer_data)
 
         # Clean up expired entries
         for key in expired_keys:
@@ -175,8 +180,14 @@ class QueryResultCache:
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
         query_embedding: Optional[list[float]] = None,
+        answer_data: Optional[dict] = None,
     ) -> None:
-        """Cache query results."""
+        """Cache query results and optionally the generated answer.
+
+        Args:
+            answer_data: Optional dict with 'answer' (str) and 'sources' (list of dicts).
+                         When present, cache hits skip answer generation entirely.
+        """
         query_emb = query_embedding if query_embedding is not None else self._embeddings.embed_query(query)
         cache_key = self._make_cache_key(query_emb)
 
@@ -185,8 +196,24 @@ class QueryResultCache:
             oldest_key, _ = self._cache.popitem(last=False)
             self._embedding_cache.pop(oldest_key, None)
 
-        self._cache[cache_key] = (query, client_id, document_id, results, time.time())
+        self._cache[cache_key] = (query, client_id, document_id, results, answer_data, time.time())
         self._embedding_cache[cache_key] = query_emb
+
+    def invalidate_for_client(self, client_id: str) -> int:
+        """Invalidate all cache entries for a client (call on document upload/delete).
+
+        Returns the number of entries removed.
+        """
+        keys_to_remove = [
+            k for k, (_, cached_client, *_) in self._cache.items()
+            if cached_client == client_id
+        ]
+        for key in keys_to_remove:
+            self._cache.pop(key, None)
+            self._embedding_cache.pop(key, None)
+        if keys_to_remove:
+            logger.info(f"Invalidated {len(keys_to_remove)} cache entries for client {client_id}")
+        return len(keys_to_remove)
 
     def clear(self) -> None:
         """Clear the cache."""
@@ -268,19 +295,21 @@ class HybridRetriever:
         self._language_config = language_config or TenantLanguageConfig.for_language("en")
         self._lang = self._language_config.language
         self._reranker = None
-        self._llm_client = None  # Cached OpenAI client for NVIDIA NIM
+        self._llm_client = None  # Cached OpenAI client for answer-quality tasks
+        self._enhancement_llm_client = None  # Faster model for query enhancement
 
         # Quick Win #4: Reranking cache to reduce API costs (bounded LRU)
         self._rerank_cache = OrderedDict()
         self._rerank_cache_max_size = 1000
 
         # Advanced Optimization: Semantic result cache
-        # Caches full retrieval results for semantically similar queries
+        # Caches full retrieval results + generated answers for similar queries.
+        # 24-hour TTL is safe for legal documents which are rarely updated.
         self._result_cache = QueryResultCache(
             embedding_service=embedding_service,
             similarity_threshold=0.92,
             max_size=500,
-            ttl_seconds=3600,  # 1 hour
+            ttl_seconds=86400,  # 24 hours
         )
 
         # Initialize reranker if enabled
@@ -303,6 +332,10 @@ class HybridRetriever:
             logger.warning("Cohere not installed. Reranking disabled.")
             self.config.use_reranking = False
 
+    # Faster model for query enhancement (expansion, HyDE, multi-query).
+    # These are simple generation tasks that don't need a 235B model.
+    ENHANCEMENT_MODEL = "meta/llama-3.3-70b-instruct"
+
     def _get_llm_client(self):
         """Get or create cached OpenAI client for NVIDIA NIM API."""
         if self._llm_client is None:
@@ -313,6 +346,22 @@ class HybridRetriever:
                 timeout=60.0,
             )
         return self._llm_client
+
+    def _get_enhancement_llm_client(self):
+        """Get or create cached OpenAI client for fast query enhancement.
+
+        Uses a smaller, faster model (Llama 3.3 70B) for query expansion,
+        HyDE, and multi-query generation — tasks that don't need a 235B model.
+        This cuts enhancement latency from ~5-8s to ~1-2s per call.
+        """
+        if self._enhancement_llm_client is None:
+            from openai import OpenAI
+            self._enhancement_llm_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=os.getenv("NVIDIA_API_KEY"),
+                timeout=30.0,
+            )
+        return self._enhancement_llm_client
 
     def _classify_query(self, query: str) -> str:
         """
@@ -358,7 +407,7 @@ class HybridRetriever:
         # Simple queries: very short AND no question words
         question_starters = lang_patterns["question_starters"]
         first_word = query_lower.split()[0] if query_lower.split() else ""
-        if word_count <= 3 and first_word not in question_starters:
+        if word_count <= 4 and first_word not in question_starters:
             logger.info(f"Query classified as 'simple' ({word_count} words, no question word)")
             return "simple"
 
@@ -418,12 +467,12 @@ class HybridRetriever:
         This addresses the semantic gap between user queries and legal documents.
         """
         try:
-            client = self._get_llm_client()
+            client = self._get_enhancement_llm_client()
 
             system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["query_expansion_system"]
 
             response = client.chat.completions.create(
-                model=self._language_config.llm_model,
+                model=self.ENHANCEMENT_MODEL,
                 messages=[{
                     "role": "system",
                     "content": system_prompt,
@@ -453,12 +502,12 @@ class HybridRetriever:
         document often retrieves better results than the query alone.
         """
         try:
-            client = self._get_llm_client()
+            client = self._get_enhancement_llm_client()
 
             system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["hyde_system"]
 
             response = client.chat.completions.create(
-                model=self._language_config.llm_model,
+                model=self.ENHANCEMENT_MODEL,
                 messages=[{
                     "role": "system",
                     "content": system_prompt,
@@ -487,12 +536,12 @@ class HybridRetriever:
         Results from all variants are combined using RRF.
         """
         try:
-            client = self._get_llm_client()
+            client = self._get_enhancement_llm_client()
 
             system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["multi_query_system"]
 
             response = client.chat.completions.create(
-                model=self._language_config.llm_model,
+                model=self.ENHANCEMENT_MODEL,
                 messages=[{
                     "role": "system",
                     "content": system_prompt,
@@ -571,10 +620,11 @@ class HybridRetriever:
         original_embedding = self.embeddings.embed_query(query)
 
         if use_cache:
-            cached_results = self._result_cache.get(
+            cache_hit = self._result_cache.get(
                 query, client_id, document_id, query_embedding=original_embedding,
             )
-            if cached_results is not None:
+            if cache_hit is not None:
+                cached_results, _ = cache_hit  # answer_data handled by API layer
                 elapsed = (time.time() - start_time) * 1000
                 logger.info(f"Cache hit! Returning {len(cached_results)} cached results in {elapsed:.0f}ms")
                 return cached_results[:top_k]

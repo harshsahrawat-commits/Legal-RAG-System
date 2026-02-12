@@ -80,46 +80,67 @@ export default function ChatInterface() {
   const closeSourcePanel = useStore((s) => s.closeSourcePanel)
   const sourcePanelOpen = useStore((s) => s.sourcePanelOpen)
 
+  // Auto-scroll as new tokens stream in
+  const lastContentLen = useRef(0)
   useEffect(() => {
-    if (listRef.current) {
+    const lastMsg = messages[messages.length - 1]
+    const contentLen = lastMsg?.content?.length || 0
+    if (listRef.current && contentLen !== lastContentLen.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
+      lastContentLen.current = contentLen
     }
   }, [messages])
+
+  const abortRef = useRef<{ abort: () => void } | null>(null)
 
   const submitQuery = useCallback(async (query: string) => {
     if (!query || loading) return
 
     setInput('')
+    const assistantId = nextId()
     setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: query }])
+    // Add empty assistant message that will be progressively updated
+    setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
     setLoading(true)
 
-    try {
-      const { data } = await api.query(query, selectedDocumentId ?? undefined)
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextId(),
-          role: 'assistant',
-          content: data.answer,
-          sources: data.sources,
-          latency_ms: data.latency_ms,
+    let accumulatedContent = ''
+
+    const handle = api.queryStream(
+      query,
+      {
+        onSources: (sources) => {
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, sources } : m)
+          )
         },
-      ])
-    } catch (err: unknown) {
-      let errorMsg = 'Sorry, something went wrong. Please try again.'
-      if (err && typeof err === 'object' && 'response' in err) {
-        const response = (err as { response?: { status?: number } }).response
-        if (response?.status === 429) errorMsg = 'Rate limit exceeded. Please wait a moment and try again.'
-        else if (response?.status === 401) errorMsg = 'Session expired. Please log in again.'
-      }
-      setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: 'assistant', content: errorMsg, isError: true },
-      ])
-    } finally {
-      setLoading(false)
-      inputRef.current?.focus()
-    }
+        onToken: (token) => {
+          accumulatedContent += token
+          const content = accumulatedContent
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, content } : m)
+          )
+        },
+        onDone: (latencyMs) => {
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, latency_ms: latencyMs } : m)
+          )
+          setLoading(false)
+          abortRef.current = null
+          inputRef.current?.focus()
+        },
+        onError: (msg) => {
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, content: msg, isError: true } : m)
+          )
+          setLoading(false)
+          abortRef.current = null
+          inputRef.current?.focus()
+        },
+      },
+      selectedDocumentId ?? undefined,
+    )
+
+    abortRef.current = handle
   }, [loading, selectedDocumentId, setMessages])
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -192,7 +213,7 @@ export default function ChatInterface() {
         {messages.map((msg) => (
           <ChatMessage key={msg.id} message={msg} />
         ))}
-        {loading && <SkeletonLoader />}
+        {loading && messages.length > 0 && messages[messages.length - 1].content === '' && <SkeletonLoader />}
       </div>
 
       <form onSubmit={handleSubmit} style={styles.inputBar}>

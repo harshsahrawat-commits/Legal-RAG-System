@@ -8,6 +8,7 @@ Run with: uvicorn execution.legal_rag.api:app --host 0.0.0.0 --port 8000
 """
 
 import os
+import json
 import time
 import uuid
 import logging
@@ -17,6 +18,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -186,6 +188,25 @@ async def get_tenant_config(
 
 
 # =============================================================================
+# Cache Invalidation
+# =============================================================================
+
+def _invalidate_client_cache(client_id: str, lang_config: TenantLanguageConfig = None):
+    """Invalidate all cached answers for a client when documents change.
+
+    Called on document upload and delete to prevent stale cached answers.
+    """
+    try:
+        # Try all language services that have been initialized
+        for lang, svc in _container._services.items():
+            retriever = svc.get("retriever")
+            if retriever and hasattr(retriever, "_result_cache"):
+                retriever._result_cache.invalidate_for_client(client_id)
+    except Exception as e:
+        logger.warning(f"Cache invalidation failed for client {client_id}: {e}")
+
+
+# =============================================================================
 # Endpoints
 # =============================================================================
 
@@ -267,6 +288,9 @@ async def upload_document(
             details={"title": parsed.metadata.title, "chunks": len(chunks)},
         )
 
+        # Invalidate answer cache for this client (new document may change answers)
+        _invalidate_client_cache(client_id, lang_config)
+
         return UploadResponse(
             id=parsed.metadata.document_id,
             title=parsed.metadata.title,
@@ -311,6 +335,10 @@ async def delete_document(
         deleted = store.delete_document(document_id, client_id=client_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Document not found")
+
+        # Invalidate answer cache (deleted document may have been in cached answers)
+        _invalidate_client_cache(client_id)
+
         store.log_audit(
             client_id=client_id,
             action="delete",
@@ -353,8 +381,26 @@ async def query_documents(
         details={"query": request.query[:200]},
     )
 
-    # Retrieve
-    results = services["retriever"].retrieve(
+    # Check full-pipeline cache first (answer + sources)
+    retriever = services["retriever"]
+    original_embedding = retriever.embeddings.embed_query(request.query)
+    cache_hit = retriever._result_cache.get(
+        request.query, client_id, request.document_id,
+        query_embedding=original_embedding,
+    )
+    if cache_hit is not None:
+        cached_results, answer_data = cache_hit
+        if answer_data is not None:
+            elapsed = (time.time() - start_time) * 1000
+            logger.info(f"Full-pipeline cache hit: returning cached answer in {elapsed:.0f}ms")
+            return QueryResponse(
+                answer=answer_data["answer"],
+                sources=[SourceInfo(**s) for s in answer_data["sources"]],
+                latency_ms=elapsed,
+            )
+
+    # Retrieve (cache miss or no answer cached)
+    results = retriever.retrieve(
         query=request.query,
         client_id=client_id,
         document_id=request.document_id,
@@ -399,7 +445,7 @@ async def query_documents(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nProvide a clear, well-cited answer."},
             ],
-            max_tokens=1500,
+            max_tokens=3500,
             temperature=0.2,
         )
         answer = response.choices[0].message.content
@@ -431,10 +477,180 @@ async def query_documents(
             context_after=cc.context_after or "",
         ))
 
+    # Cache the full pipeline result (answer + sources) for future identical queries
+    answer_data = {
+        "answer": answer,
+        "sources": [s.model_dump() for s in sources],
+    }
+    retriever._result_cache.set(
+        request.query, results, client_id, request.document_id,
+        query_embedding=original_embedding,
+        answer_data=answer_data,
+    )
+
     return QueryResponse(
         answer=answer,
         sources=sources,
         latency_ms=(time.time() - start_time) * 1000,
+    )
+
+
+@app.post("/api/v1/query/stream", dependencies=[Depends(check_rate_limit)])
+async def query_documents_stream(
+    request: QueryRequest,
+    client: dict = Depends(get_authenticated_client),
+    lang_config: TenantLanguageConfig = Depends(get_tenant_config),
+):
+    """Streaming RAG query with SSE.
+
+    Sends events:
+      - {"event": "sources", "data": [...]}  (after retrieval)
+      - {"event": "token", "data": "..."}    (during generation)
+      - {"event": "done", "data": {"latency_ms": ...}}  (final)
+      - {"event": "error", "data": "..."}    (on failure)
+    """
+    start_time = time.time()
+    client_id = client["client_id"]
+    services = _container.get_services(lang_config)
+    store = _container.get_store()
+
+    # Quota enforcement
+    try:
+        from .quotas import get_quota_manager, QuotaExceededError
+        quota_manager = get_quota_manager(store)
+        quota_manager.check_query_quota(client_id, tier=client.get("tier", "default"))
+    except QuotaExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except Exception as e:
+        logger.warning(f"Quota check failed (allowing request): {e}")
+
+    # Audit
+    store.log_audit(client_id=client_id, action="query", details={"query": request.query[:200]})
+
+    def _sse_event(event: str, data) -> str:
+        """Format a Server-Sent Event."""
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def generate():
+        # Check full-pipeline cache first
+        retriever = services["retriever"]
+        original_embedding = retriever.embeddings.embed_query(request.query)
+        cache_hit = retriever._result_cache.get(
+            request.query, client_id, request.document_id,
+            query_embedding=original_embedding,
+        )
+        if cache_hit is not None:
+            cached_results, answer_data = cache_hit
+            if answer_data is not None:
+                elapsed = (time.time() - start_time) * 1000
+                logger.info(f"Stream: full-pipeline cache hit in {elapsed:.0f}ms")
+                yield _sse_event("sources", answer_data["sources"])
+                yield _sse_event("token", answer_data["answer"])
+                yield _sse_event("done", {"latency_ms": elapsed})
+                return
+
+        # Retrieve
+        results = retriever.retrieve(
+            query=request.query,
+            client_id=client_id,
+            document_id=request.document_id,
+            top_k=request.top_k,
+        )
+        results = [r for r in results if r.hierarchy_path != "Document"]
+
+        if not results:
+            yield _sse_event("token", "No relevant information found in the uploaded documents.")
+            yield _sse_event("sources", [])
+            yield _sse_event("done", {"latency_ms": (time.time() - start_time) * 1000})
+            return
+
+        # Build citations + sources
+        doc_ids = list(set(r.document_id for r in results))
+        doc_titles = store.get_document_titles(doc_ids, client_id=client_id)
+        cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
+
+        sources_list = []
+        for cc in cited_contents:
+            sources_list.append(SourceInfo(
+                document_title=cc.citation.document_title,
+                section=cc.citation.section,
+                page_numbers=cc.citation.page_numbers,
+                hierarchy_path=cc.citation.hierarchy_path,
+                chunk_id=cc.citation.chunk_id,
+                document_id=cc.citation.document_id,
+                relevance_score=cc.citation.relevance_score,
+                short_citation=cc.citation.short_format(),
+                long_citation=cc.citation.long_format(),
+                content=cc.content,
+                context_before=cc.context_before or "",
+                context_after=cc.context_after or "",
+            ))
+
+        # Send sources immediately so frontend can show them while answer streams
+        yield _sse_event("sources", [s.model_dump() for s in sources_list])
+
+        # Build context for LLM
+        context = "\n\n---\n\n".join([
+            f"**[{i+1}]** {cc.citation.short_format()}:\n{cc.content}"
+            for i, cc in enumerate(cited_contents)
+        ])
+
+        # Stream answer generation
+        lang = lang_config.language
+        full_answer = ""
+        try:
+            llm_client = _container.get_llm_client()
+            system_prompt = LLM_PROMPTS.get(lang, LLM_PROMPTS["en"])["rag_system"]
+
+            stream = llm_client.chat.completions.create(
+                model=lang_config.llm_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nProvide a clear, well-cited answer."},
+                ],
+                max_tokens=3500,
+                temperature=0.2,
+                stream=True,
+            )
+
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full_answer += token
+                    yield _sse_event("token", token)
+
+        except Exception as e:
+            from openai import APITimeoutError
+            if isinstance(e, APITimeoutError):
+                logger.error(f"Stream: LLM timed out ({lang}): {request.query[:100]}")
+                fallback = "I found relevant information but the answer generation timed out. See sources below."
+            else:
+                logger.error(f"Stream: LLM failed ({lang}): {type(e).__name__}: {e}")
+                fallback = "I found relevant information but couldn't generate a summary. See sources below."
+            full_answer = fallback
+            yield _sse_event("token", fallback)
+
+        # Cache the full pipeline result
+        answer_data = {
+            "answer": full_answer,
+            "sources": [s.model_dump() for s in sources_list],
+        }
+        retriever._result_cache.set(
+            request.query, results, client_id, request.document_id,
+            query_embedding=original_embedding,
+            answer_data=answer_data,
+        )
+
+        yield _sse_event("done", {"latency_ms": (time.time() - start_time) * 1000})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
     )
 
 

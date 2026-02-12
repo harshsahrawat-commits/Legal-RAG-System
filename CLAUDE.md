@@ -116,14 +116,37 @@ Hard-won discoveries from development and debugging sessions. Follow these to av
 
 **Query classification drives pipeline cost.** The retriever classifies queries into four types: `simple`, `factual`, `analytical`, and `standard`. Each type has different pipeline configurations:
 - `analytical` -- full enhancement (query expansion + HyDE + multi-query = 3 LLM calls). Most expensive.
-- `simple` -- skips all enhancement for speed. Cheapest.
+- `simple` -- skips all enhancement for speed. Cheapest. Triggered for queries ≤4 words.
 - Always test query classification when modifying retrieval logic to avoid unexpected cost spikes.
 
 **Smart reranking saves 30-50% on Cohere reranking costs.** The retriever skips expensive Cohere reranking API calls when the top result has high confidence (>0.85 score) and a clear lead (>0.15 gap to the second result). Do not remove this optimization without understanding the cost impact.
 
 ### LLM Provider
 
-**Uses NVIDIA NIM API (OpenAI-compatible), not Anthropic Claude.** The answer generation model is Qwen 3 235B (`qwen/qwen3-235b-a22b`); contextual chunking uses Llama 3.2 3B (`meta/llama-3.2-3b-instruct`). Both are accessed via the NVIDIA NIM endpoint. Do not assume Anthropic API conventions when modifying LLM integration code.
+**Uses NVIDIA NIM API (OpenAI-compatible), not Anthropic Claude.** Three models are in use:
+- **Answer generation:** Qwen 3 235B (`qwen/qwen3-235b-a22b`) -- 60s timeout, max_tokens=3500
+- **Query enhancement** (expansion, HyDE, multi-query): Llama 3.3 70B (`meta/llama-3.3-70b-instruct`) -- 30s timeout. Uses a separate cached client (`_get_enhancement_llm_client()`) for lower latency.
+- **Contextual chunking:** Llama 3.2 3B (`meta/llama-3.2-3b-instruct`)
+
+All are accessed via the NVIDIA NIM endpoint. Do not assume Anthropic API conventions when modifying LLM integration code. The enhancement and answer LLM clients are intentionally separate -- do not merge them.
+
+### Latency & Caching
+
+**pgvector HNSW ef_search is tuned to 25** (default is 40). This trades marginal recall for faster vector search. Do not increase without benchmarking latency impact on production query volumes.
+
+**Full-pipeline answer caching stores both retrieval results and generated answers.** `QueryResultCache` returns a `(results, answer_data)` tuple where `answer_data` is `Optional[dict]` with `'answer'` and `'sources'` keys. TTL is 24 hours. Cache is invalidated on document upload or delete. When modifying the cache, always preserve this tuple structure.
+
+**Simple query classification threshold is ≤4 words** (widened from ≤3). This means more queries skip the expensive enhancement pipeline. Test classification changes against representative query sets before deploying.
+
+### SSE Streaming
+
+**The `/api/v1/query/stream` endpoint uses Server-Sent Events** for progressive answer rendering. Event protocol:
+- `sources` -- sent once after retrieval with serialized SourceInfo list
+- `token` -- sent per chunk during LLM streaming
+- `done` -- sent once with `{"latency_ms": float}`
+- `error` -- sent on failure
+
+Frontend creates an empty assistant message immediately and updates it progressively via `setMessages` map updates. The skeleton loader only shows when the last message content is an empty string.
 
 ### Testing
 
