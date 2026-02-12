@@ -490,33 +490,45 @@ class VectorStore:
         RETURNING client_id, tier, name
         """
 
-        conn = self._ensure_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, (key_hash,))
-                row = cur.fetchone()
-                conn.commit()
+        for attempt in range(2):
+            conn = self._ensure_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (key_hash,))
+                    row = cur.fetchone()
+                    conn.commit()
 
-            if row:
-                # Handle both RealDictRow and tuple
-                if isinstance(row, dict):
-                    return {
-                        "client_id": str(row["client_id"]),
-                        "tier": row["tier"],
-                        "name": row["name"]
-                    }
-                else:
-                    return {
-                        "client_id": str(row[0]),
-                        "tier": row[1],
-                        "name": row[2]
-                    }
-            return None
-        except Exception as e:
-            logger.error(f"API key validation failed: {e}")
-            return None
-        finally:
-            self._release_connection(conn)
+                self._release_connection(conn)
+
+                if row:
+                    # Handle both RealDictRow and tuple
+                    if isinstance(row, dict):
+                        return {
+                            "client_id": str(row["client_id"]),
+                            "tier": row["tier"],
+                            "name": row["name"]
+                        }
+                    else:
+                        return {
+                            "client_id": str(row[0]),
+                            "tier": row[1],
+                            "name": row[2]
+                        }
+                return None
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                logger.warning(f"API key validation connection error (attempt {attempt+1}): {e}")
+                try:
+                    self._release_connection(conn)
+                except Exception:
+                    pass
+                if attempt == 0:
+                    self.connect()  # Force reconnect and retry
+                    continue
+                return None
+            except Exception as e:
+                logger.error(f"API key validation failed: {e}")
+                self._release_connection(conn)
+                return None
 
     def log_audit(
         self,
