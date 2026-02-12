@@ -219,6 +219,10 @@ class RetrievalConfig:
     # Whether to use reranking
     use_reranking: bool = True
 
+    # Document diversity: penalize same-document clustering in results
+    use_document_diversity: bool = True
+    diversity_decay_factor: float = 0.7  # 0.5 = aggressive, 0.8 = mild, 1.0 = off
+
     # Smart reranking: skip reranking when top result is highly confident
     # This reduces Cohere API costs by 30-50%
     use_smart_reranking: bool = True
@@ -306,7 +310,7 @@ class HybridRetriever:
             self._llm_client = OpenAI(
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key=os.getenv("NVIDIA_API_KEY"),
-                timeout=30.0,
+                timeout=60.0,
             )
         return self._llm_client
 
@@ -330,6 +334,12 @@ class HybridRetriever:
         # Check for analytical question patterns FIRST (highest priority)
         for pattern in lang_patterns["analytical"]:
             if re.search(pattern, query_lower):
+                # Cap Greek queries at "standard" — HyDE generates English-style
+                # hypothetical docs which are less useful for Greek legal text,
+                # and the extra LLM call adds ~30s latency causing timeouts.
+                if self._lang == "el":
+                    logger.info(f"Query classified as 'standard' (analytical capped for Greek)")
+                    return "standard"
                 logger.info(f"Query classified as 'analytical' (pattern match)")
                 return "analytical"
 
@@ -665,12 +675,27 @@ class HybridRetriever:
         if effective_config.use_reranking and self._reranker and fused_results:
             # Check if we can skip reranking (smart reranking for cost savings)
             if self._should_skip_reranking(fused_results):
-                final_results = fused_results[:top_k]
+                final_results = fused_results[:top_k * 2]
             else:
                 reranked_results = self._rerank(query, fused_results[:top_k * 2])
-                final_results = reranked_results[:top_k]
+                final_results = reranked_results[:top_k * 2]
         else:
-            final_results = fused_results[:top_k]
+            final_results = fused_results[:top_k * 2]
+
+        # Stage 4: Document diversity enforcement
+        # Only for analytical/standard queries across multiple documents —
+        # simple/factual queries typically target one document, and
+        # single-document filters make diversity meaningless.
+        if (effective_config.use_document_diversity
+                and query_type in ("analytical", "standard")
+                and not document_id):
+            final_results = self._enforce_document_diversity(
+                final_results,
+                top_k=top_k,
+                decay_factor=effective_config.diversity_decay_factor,
+            )
+        else:
+            final_results = final_results[:top_k]
 
         # ============================================================
         # Cache results for future similar queries
@@ -769,6 +794,54 @@ class HybridRetriever:
             return True
 
         return False
+
+    def _enforce_document_diversity(
+        self,
+        results: list[SearchResult],
+        top_k: int,
+        decay_factor: float = 0.7,
+    ) -> list[SearchResult]:
+        """
+        Re-score results to penalize same-document clustering.
+
+        Each subsequent chunk from the same document has its score
+        multiplied by decay_factor^(occurrence_count). The list is
+        then re-sorted by adjusted score and truncated to top_k.
+
+        With decay_factor=0.7: 1st chunk keeps 100%, 2nd 70%, 3rd 49%, 4th 34%.
+        This ensures analytical queries surface chunks from multiple documents
+        without hard caps that could hurt precision when one document truly dominates.
+        """
+        if not results or len(results) <= 1:
+            return results
+
+        doc_counts: dict[str, int] = {}
+        adjusted = []
+
+        for result in results:
+            doc_id = result.document_id
+            count = doc_counts.get(doc_id, 0)
+            penalty = decay_factor ** count
+            adjusted_score = result.score * penalty
+            adjusted.append((adjusted_score, count, result))
+            doc_counts[doc_id] = count + 1
+
+        # Re-sort by adjusted score
+        adjusted.sort(key=lambda x: x[0], reverse=True)
+
+        from dataclasses import replace as _replace
+        final = []
+        for adj_score, doc_occurrence, result in adjusted[:top_k]:
+            new_metadata = {
+                **result.metadata,
+                "diversity_score": adj_score,
+                "doc_occurrence": doc_occurrence,
+            }
+            final.append(_replace(result, metadata=new_metadata))
+
+        unique_docs = len(set(r.document_id for r in final))
+        logger.info(f"Document diversity: {unique_docs} unique docs in top-{len(final)} (decay={decay_factor})")
+        return final
 
     def _rerank(
         self,

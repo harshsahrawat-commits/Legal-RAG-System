@@ -153,7 +153,7 @@ class ServiceContainer:
             self._llm_client = OpenAI(
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key=os.getenv("NVIDIA_API_KEY"),
-                timeout=30.0,
+                timeout=120.0,
             )
         return self._llm_client
 
@@ -405,8 +405,13 @@ async def query_documents(
         answer = response.choices[0].message.content
 
     except Exception as e:
-        logger.error(f"LLM generation failed: {e}")
-        answer = "I found relevant information but couldn't generate a summary. See sources below."
+        from openai import APITimeoutError
+        if isinstance(e, APITimeoutError):
+            logger.error(f"LLM generation timed out for query ({lang}): {request.query[:100]}")
+            answer = "I found relevant information but the answer generation timed out. See sources below."
+        else:
+            logger.error(f"LLM generation failed ({lang}): {type(e).__name__}: {e}")
+            answer = "I found relevant information but couldn't generate a summary. See sources below."
 
     # Format sources
     sources = []
