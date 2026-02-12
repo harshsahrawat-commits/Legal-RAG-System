@@ -117,6 +117,9 @@ export const api = {
 
         const decoder = new TextDecoder()
         let buffer = ''
+        // Persist across chunks so split event:/data: lines aren't lost
+        let currentEvent = ''
+        let currentData = ''
 
         while (true) {
           const { done, value } = await reader.read()
@@ -127,9 +130,6 @@ export const api = {
           // Parse SSE events from buffer
           const lines = buffer.split('\n')
           buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-          let currentEvent = ''
-          let currentData = ''
 
           for (const line of lines) {
             if (line.startsWith('event: ')) {
