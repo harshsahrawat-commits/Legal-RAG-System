@@ -477,8 +477,9 @@ class LegalChunker:
         paragraph_numbers: list[int] = None,
     ) -> list[Chunk]:
         """Split content on sentence boundaries with paragraph tracking."""
-        # Simple sentence split (handles common legal abbreviations)
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', content)
+        # Sentence split supporting both Latin (A-Z) and Greek (Α-Ω) uppercase,
+        # plus Greek question mark (;) and middle dot (·) as sentence terminators.
+        sentences = re.split(r'(?<=[.!?;·])\s+(?=[A-ZΑ-ΩΆ-Ώ])', content)
 
         chunks = []
         current_text = ""

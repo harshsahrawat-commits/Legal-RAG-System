@@ -421,14 +421,16 @@ def get_embedding_service(
 
     if prov == "voyage":
         # Voyage tokenizer is more aggressive than LLM tokenizers:
-        # Greek can be ~1.0-1.2 chars/token, English ~2-3. Use conservative estimates.
-        cpt = 1.0 if (language_config and language_config.chars_per_token <= 3) else 2.0
+        # Greek can be ~0.8-1.0 chars/token, English ~2-3. Use conservative estimates.
+        # max_tokens_per_batch=80K gives 33% buffer from Voyage's 120K hard limit.
+        cpt = 0.8 if (language_config and language_config.chars_per_token <= 3) else 2.0
         config = EmbeddingConfig(
             provider="voyage",
             model=model or "voyage-law-2",
             dimensions=1024,
             batch_size=128,
             chars_per_token=cpt,
+            max_tokens_per_batch=80000,
         )
         return VoyageEmbeddingService(config)
 
