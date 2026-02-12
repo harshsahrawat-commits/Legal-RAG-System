@@ -190,15 +190,18 @@ class CitationExtractor:
             # Get paragraph numbers from SearchResult field
             paragraph_numbers = getattr(result, "original_paragraph_numbers", None) or []
 
-            # Use display score: prefer rerank_score > original_score > RRF score
-            # rerank_score is 0-1 from Cohere, original_score is vector similarity
-            # Use explicit None checks since 0.0 is a valid score but falsy
-            rerank = result.metadata.get("rerank_score")
+            # Use display score: prefer cosine similarity > rerank > ts_rank > raw
+            # original_score is cosine similarity (0-1) — intuitive as percentage
+            # rerank_score is Cohere's proprietary score (clusters 0.05-0.40, not a %)
+            # ts_rank (FTS) can exceed 1.0, so cap it
             original = result.metadata.get("original_score")
-            if rerank is not None:
+            rerank = result.metadata.get("rerank_score")
+            if original is not None and original <= 1.0:
+                display_score = original
+            elif rerank is not None:
                 display_score = rerank
             elif original is not None:
-                display_score = original
+                display_score = min(original, 0.99)
             else:
                 display_score = result.score
 
