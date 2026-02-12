@@ -400,11 +400,13 @@ async def query_documents(
             )
 
     # Retrieve (cache miss or no answer cached)
+    # Pass pre-computed embedding to avoid redundant Voyage API call inside retriever
     results = retriever.retrieve(
         query=request.query,
         client_id=client_id,
         document_id=request.document_id,
         top_k=request.top_k,
+        query_embedding=original_embedding,
     )
 
     # Filter out summary chunks
@@ -549,12 +551,13 @@ async def query_documents_stream(
                 yield _sse_event("done", {"latency_ms": elapsed})
                 return
 
-        # Retrieve
+        # Retrieve — pass pre-computed embedding to avoid redundant Voyage API call
         results = retriever.retrieve(
             query=request.query,
             client_id=client_id,
             document_id=request.document_id,
             top_k=request.top_k,
+            query_embedding=original_embedding,
         )
         results = [r for r in results if r.hierarchy_path != "Document"]
 

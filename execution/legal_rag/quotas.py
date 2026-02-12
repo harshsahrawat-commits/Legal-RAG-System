@@ -169,7 +169,7 @@ class QuotaManager:
                         (client_id,)
                     )
                     row = cur.fetchone()
-                    return row["count"] if row else 0
+                    return row[0] if row else 0
         except Exception as e:
             logger.warning(f"Failed to get chunk count for {client_id}: {e}")
             return 0
@@ -190,7 +190,7 @@ class QuotaManager:
                         (client_id,)
                     )
                     row = cur.fetchone()
-                    return row["query_count"] if row else 0
+                    return row[0] if row else 0
         except Exception as e:
             logger.warning(f"Failed to get query count for {client_id}: {e}")
             return 0

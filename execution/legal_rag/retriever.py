@@ -571,6 +571,7 @@ class HybridRetriever:
         document_id: Optional[str] = None,
         top_k: Optional[int] = None,
         use_cache: bool = True,
+        query_embedding: Optional[list[float]] = None,
     ) -> list[SearchResult]:
         """
         Retrieve relevant chunks for a query.
@@ -617,7 +618,8 @@ class HybridRetriever:
         # ADVANCED OPTIMIZATION 1: Check semantic result cache
         # ============================================================
         # Compute the original query embedding once — reuse for cache + search
-        original_embedding = self.embeddings.embed_query(query)
+        # Accept pre-computed embedding from caller to avoid redundant API calls
+        original_embedding = query_embedding if query_embedding is not None else self.embeddings.embed_query(query)
 
         if use_cache:
             cache_hit = self._result_cache.get(
