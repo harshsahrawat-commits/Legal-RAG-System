@@ -128,17 +128,21 @@ const THINKING_MESSAGES = [
 function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; sourceCount: number }) {
   const [statusIndex, setStatusIndex] = useState(0)
   const [textVisible, setTextVisible] = useState(true)
+  const fadeTimer = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
     if (hasSources) return
     const interval = setInterval(() => {
       setTextVisible(false)
-      setTimeout(() => {
+      fadeTimer.current = setTimeout(() => {
         setStatusIndex((prev) => (prev + 1) % THINKING_MESSAGES.length)
         setTextVisible(true)
       }, 500)
     }, 4000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      if (fadeTimer.current) clearTimeout(fadeTimer.current)
+    }
   }, [hasSources])
 
   return (
@@ -172,7 +176,7 @@ function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; s
                 style={{
                   ...thinkingStyles.skeletonLine,
                   width: `${w}%`,
-                  animationDelay: `${i * 0.15}s`,
+                  animation: `shimmerSlide 1.8s ease-in-out ${i * 0.15}s infinite`,
                 }}
               />
             ))}
@@ -212,9 +216,8 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
   skeletonLine: {
     height: 14,
     borderRadius: 4,
-    background: 'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.06) 75%)',
+    background: 'linear-gradient(90deg, #1e1e1e 25%, #333333 50%, #1e1e1e 75%)',
     backgroundSize: '200% 100%',
-    animation: 'shimmerSlide 1.8s ease-in-out infinite',
   },
   sourcesBadge: {
     display: 'inline-flex',
