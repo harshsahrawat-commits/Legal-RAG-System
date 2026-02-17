@@ -146,43 +146,36 @@ function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; s
   }, [hasSources])
 
   return (
-    <div style={{ minWidth: 260, animation: 'fadeIn 0.25s ease' }}>
-      {hasSources ? (
-        <>
-          <div style={thinkingStyles.sourcesBadge}>
-            <FileText size={12} />
-            <span>{sourceCount} source{sourceCount !== 1 ? 's' : ''} found</span>
-          </div>
-          <div style={thinkingStyles.generatingRow}>
-            <span style={thinkingStyles.pulseDot} />
-            <span>Generating answer\u2026</span>
-          </div>
-        </>
-      ) : (
-        <>
-          <div style={thinkingStyles.statusRow}>
-            <span style={thinkingStyles.pulseDot} />
-            <span style={{
-              ...thinkingStyles.statusText,
-              opacity: textVisible ? 1 : 0,
-            }}>
-              {THINKING_MESSAGES[statusIndex]}
-            </span>
-          </div>
-          <div style={thinkingStyles.skeletonGroup}>
-            {[85, 70, 55].map((w, i) => (
-              <div
-                key={i}
-                style={{
-                  ...thinkingStyles.skeletonLine,
-                  width: `${w}%`,
-                  animation: `shimmerSlide 1.8s ease-in-out ${i * 0.15}s infinite`,
-                }}
-              />
-            ))}
-          </div>
-        </>
+    <div style={{ minWidth: 260, minHeight: 80, animation: 'fadeIn 0.25s ease' }}>
+      {hasSources && (
+        <div style={thinkingStyles.sourcesBadge}>
+          <FileText size={12} />
+          <span>{sourceCount} source{sourceCount !== 1 ? 's' : ''} found</span>
+        </div>
       )}
+
+      <div style={{ ...thinkingStyles.statusRow, marginTop: hasSources ? 10 : 0 }}>
+        <span style={thinkingStyles.pulseDot} />
+        <span style={{
+          ...thinkingStyles.statusText,
+          opacity: hasSources ? 1 : (textVisible ? 1 : 0),
+        }}>
+          {hasSources ? 'Generating answer\u2026' : THINKING_MESSAGES[statusIndex]}
+        </span>
+      </div>
+
+      <div style={thinkingStyles.skeletonGroup}>
+        {(hasSources ? [75, 60] : [85, 70, 55]).map((w, i) => (
+          <div
+            key={i}
+            style={{
+              ...thinkingStyles.skeletonLine,
+              width: `${w}%`,
+              animation: `shimmerSlide 1.8s ease-in-out ${i * 0.15}s infinite`,
+            }}
+          />
+        ))}
+      </div>
     </div>
   )
 }
@@ -231,15 +224,6 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     animation: 'slideUpFadeIn 0.3s ease-out forwards',
   },
-  generatingRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 10,
-    fontSize: 12,
-    color: 'var(--text-3)',
-    animation: 'fadeIn 0.3s ease',
-  },
 }
 
 export default function ChatMessage({ message, isStreaming = false }: Props) {
@@ -257,19 +241,26 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
   // Smooth transition: thinking → streaming content
   const [isFadingOut, setIsFadingOut] = useState(false)
   const wasThinkingRef = useRef(true)
+  const fadeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     if (isStreaming && wasThinkingRef.current && message.content !== '') {
-      // First token arrived — fade out thinking indicator
-      setIsFadingOut(true)
-      const timer = setTimeout(() => setIsFadingOut(false), 300)
+      // First token arrived — fade out thinking, then show content
       wasThinkingRef.current = false
-      return () => clearTimeout(timer)
+      setIsFadingOut(true)
+      fadeTimerRef.current = setTimeout(() => setIsFadingOut(false), 150)
     }
     if (message.content === '') {
       wasThinkingRef.current = true
     }
   }, [isStreaming, message.content])
+
+  // Cleanup only on unmount — not on every token
+  useEffect(() => {
+    return () => {
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+    }
+  }, [])
 
   const showThinkingUI = isStreaming && (message.content === '' || isFadingOut)
 
@@ -308,16 +299,13 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
 
     if (message.content === '') return null
 
-    // Phase 3: Content fades in after thinking fades out
-    const streamEnter = isStreaming ? { animation: 'fadeIn 0.2s ease-in' } : {}
-
     // Check if the content has any markdown formatting
     const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)
 
     if (!hasMarkdown) {
       // Plain text with citations
       return (
-        <div style={{ ...styles.text, ...streamEnter }}>
+        <div style={styles.text}>
           {parts.map((part, i) =>
             part.type === 'text' ? (
               <span key={i}>{part.content}</span>
@@ -337,7 +325,7 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
 
     // Markdown content: render text segments as markdown, keep citation badges inline
     return (
-      <div style={{ ...styles.markdown, ...streamEnter }}>
+      <div style={styles.markdown}>
         {parts.map((part, i) =>
           part.type === 'text' ? (
             <ReactMarkdown key={i} remarkPlugins={[remarkGfm]} components={markdownComponents}>
