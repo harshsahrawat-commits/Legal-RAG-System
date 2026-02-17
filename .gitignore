@@ -43,6 +43,26 @@ token.json
 
 # Test files (large PDFs)
 test_files/
+test_files_cy/
+
+# Document storage (local only, not on Railway)
+document_files/
+
+# Screenshots and images
+*.png
+
+# Log dumps
+logs.*.json
+
+# Migration artifacts
+migration_log.txt
+
+# Local dev env overrides
+frontend/.env.development
+
+# Standalone docs (local reference only)
+Current_version.md
+Legal_RAG_System_Architecture_v2.pdf
 
 # Database backups
 backups/
