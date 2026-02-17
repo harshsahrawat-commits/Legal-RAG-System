@@ -82,6 +82,26 @@ def _stem_from_file_path(file_path: str | None) -> str | None:
         return None
     return Path(file_path).stem
 
+
+def _stem_from_title(title: str | None) -> str | None:
+    """Derive a CyLaw filename stem from a document title.
+
+    Cypriot law titles contain the law identifier, e.g.:
+    'Ο περί ... Νόμος του 2020 (123(I)/2020)' → '2020_1_123'
+    'Ο περί ... Νόμος του 2011 (47(Ι)/2011)'  → '2011_1_047'
+    Handles both Latin (I) and Greek (Ι) capital iota.
+    """
+    if not title:
+        return None
+    import re
+    # Pattern: N(I)/YYYY or N(Ι)/YYYY — Latin or Greek iota
+    m = re.search(r"(\d+)\s*\([IΙ]\)\s*/?\s*(\d{4})", title)
+    if m:
+        number = m.group(1)
+        year = m.group(2)
+        return f"{year}_1_{number.zfill(3)}"
+    return None
+
 app = FastAPI(
     title="Legal RAG API",
     description="REST API for Legal Document Intelligence with multilingual support",
@@ -363,9 +383,9 @@ async def list_documents(
     docs = store.list_documents(client_id=client["client_id"])
     result = []
     for d in docs:
-        # Derive CyLaw URL from metadata stem or file_path
+        # Derive CyLaw URL from metadata stem, file_path, or title
         meta = d.get("metadata") or {}
-        stem = meta.get("source_stem") or _stem_from_file_path(d.get("file_path"))
+        stem = meta.get("source_stem") or _stem_from_file_path(d.get("file_path")) or _stem_from_title(d.get("title"))
         result.append(DocumentInfo(
             id=str(d["id"]),
             title=d["title"],
@@ -487,7 +507,7 @@ async def query_documents(
     # Pre-compute CyLaw URLs per document
     doc_cylaw_urls: dict[str, str | None] = {}
     for did, meta in doc_source_meta.items():
-        stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path"))
+        stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path")) or _stem_from_title(meta.get("title"))
         doc_cylaw_urls[did] = generate_cylaw_url(stem)
 
     # Citations
@@ -641,7 +661,7 @@ async def query_documents_stream(
         doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
         doc_cylaw_urls: dict[str, str | None] = {}
         for did, meta in doc_source_meta.items():
-            stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path"))
+            stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path")) or _stem_from_title(meta.get("title"))
             doc_cylaw_urls[did] = generate_cylaw_url(stem)
         cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
 
