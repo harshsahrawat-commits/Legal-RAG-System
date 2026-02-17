@@ -1367,6 +1367,56 @@ class VectorStore:
         finally:
             self._release_connection(conn)
 
+    def get_document_source_meta(
+        self,
+        document_ids: list[str],
+        client_id: Optional[str] = None,
+    ) -> dict[str, dict]:
+        """Look up document titles, file_path, and metadata by IDs.
+
+        Returns:
+            Dict mapping document_id to {"title": ..., "file_path": ..., "metadata": ...}
+        """
+        if not document_ids:
+            return {}
+
+        conn = self._ensure_connection()
+
+        placeholders = ",".join(["%s::uuid"] * len(document_ids))
+        sql = f"SELECT id, title, file_path, metadata FROM legal_documents WHERE id IN ({placeholders})"
+        params = list(document_ids)
+
+        if client_id:
+            sql += " AND client_id = %s::uuid"
+            params.append(client_id)
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+
+            result = {}
+            for row in rows:
+                if hasattr(row, "keys"):
+                    result[str(row["id"])] = {
+                        "title": row["title"],
+                        "file_path": row.get("file_path"),
+                        "metadata": row.get("metadata") or {},
+                    }
+                else:
+                    result[str(row[0])] = {
+                        "title": row[1],
+                        "file_path": row[2],
+                        "metadata": row[3] or {},
+                    }
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get document source meta: {e}")
+            return {}
+        finally:
+            self._release_connection(conn)
+
     def get_document_chunks(self, document_id: str) -> list[dict]:
         """Get all chunks for a document."""
         conn = self._ensure_connection()
@@ -1400,7 +1450,7 @@ class VectorStore:
         conn = self._ensure_connection()
 
         columns = ["id", "title", "document_type", "jurisdiction", "page_count",
-                   "metadata", "created_at"]
+                   "metadata", "created_at", "file_path"]
         sql = f"""
         SELECT {', '.join(columns)}
         FROM legal_documents

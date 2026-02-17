@@ -28,6 +28,7 @@ class SourceInfo(BaseModel):
     content: str = ""
     context_before: Optional[str] = ""
     context_after: Optional[str] = ""
+    cylaw_url: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -46,6 +47,7 @@ class DocumentInfo(BaseModel):
     page_count: int = 0
     chunks: Optional[int] = None
     created_at: Optional[str] = None
+    cylaw_url: Optional[str] = None
 
 
 class UploadResponse(BaseModel):

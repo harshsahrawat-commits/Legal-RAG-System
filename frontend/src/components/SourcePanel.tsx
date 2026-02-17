@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState } from 'react'
-import { X, ChevronLeft, ChevronRight, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, Copy, Check, ChevronDown, ChevronUp, FileText, Download, ExternalLink, Loader2 } from 'lucide-react'
 import { useStore } from '../store'
+import { api } from '../api'
 
 function formatPageNumbers(pages: number[]): string {
   if (!pages || pages.length === 0) return 'N/A'
@@ -23,6 +24,8 @@ export default function SourcePanel() {
     useStore()
   const [copied, setCopied] = useState(false)
   const [contextExpanded, setContextExpanded] = useState(false)
+  const [documentLoading, setDocumentLoading] = useState(false)
+  const [documentError, setDocumentError] = useState<string | null>(null)
 
   const source = currentSources[selectedSourceIndex] ?? null
   const total = currentSources.length
@@ -33,6 +36,7 @@ export default function SourcePanel() {
   useEffect(() => {
     setCopied(false)
     setContextExpanded(false)
+    setDocumentError(null)
   }, [selectedSourceIndex])
 
   const handleKey = useCallback(
@@ -67,6 +71,52 @@ export default function SourcePanel() {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
+  }
+
+  const fetchDocumentBlob = async (): Promise<{ blob: Blob; url: string; mediaType: string } | null> => {
+    if (!source) return null
+    setDocumentLoading(true)
+    setDocumentError(null)
+    try {
+      const response = await api.documents.getFile(source.document_id)
+      const contentType = response.headers?.['content-type'] || 'application/octet-stream'
+      const blob = new Blob([response.data], { type: contentType })
+      const url = URL.createObjectURL(blob)
+      return { blob, url, mediaType: contentType }
+    } catch (err: any) {
+      const status = err?.response?.status
+      if (status === 404) {
+        setDocumentError('Original file not available for this document.')
+      } else {
+        setDocumentError('Could not load document. Please try again.')
+      }
+      return null
+    } finally {
+      setDocumentLoading(false)
+    }
+  }
+
+  const handleOpenDocument = async () => {
+    const result = await fetchDocumentBlob()
+    if (!result) return
+    // Append page anchor for PDF viewers that support it
+    const isPdf = result.mediaType.includes('pdf')
+    const pageNum = source?.page_numbers?.[0]
+    const url = isPdf && pageNum ? `${result.url}#page=${pageNum}` : result.url
+    window.open(url, '_blank')
+  }
+
+  const handleDownloadDocument = async () => {
+    const result = await fetchDocumentBlob()
+    if (!result) return
+    const ext = result.mediaType.includes('html') ? '.html' : result.mediaType.includes('pdf') ? '.pdf' : ''
+    const a = document.createElement('a')
+    a.href = result.url
+    a.download = `${source?.document_title || 'document'}${ext}`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(result.url)
   }
 
   if (!sourcePanelOpen || !source) return null
@@ -108,20 +158,93 @@ export default function SourcePanel() {
             {pageDisplay !== 'N/A' && (
               <span style={styles.pageInfo}>Pages: {pageDisplay}</span>
             )}
+          </div>
 
-            {/* Relevance bar */}
-            <div style={styles.relevanceRow}>
-              <div style={styles.barTrack}>
-                <div
-                  style={{
-                    ...styles.barFill,
-                    width: `${relevancePct}%`,
-                    background: 'var(--accent, #06b6d4)',
-                  }}
-                />
-              </div>
-              <span style={styles.relevancePct}>{relevancePct}%</span>
+          {/* Action buttons — primary CTA for document access */}
+          <div style={styles.actionRow}>
+            <button
+              onClick={handleOpenDocument}
+              disabled={documentLoading}
+              style={styles.openDocBtn}
+              onMouseEnter={(e) => {
+                if (!documentLoading) {
+                  e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)'
+                  e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.5)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(16, 185, 129, 0.15)'
+                e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.3)'
+              }}
+            >
+              {documentLoading ? (
+                <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+              ) : (
+                <ExternalLink size={16} />
+              )}
+              <span>Open Full Document</span>
+            </button>
+            <button
+              onClick={handleDownloadDocument}
+              disabled={documentLoading}
+              style={styles.downloadBtn}
+              onMouseEnter={(e) => {
+                if (!documentLoading) {
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)'
+                  e.currentTarget.style.color = 'rgba(255, 255, 255, 0.9)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)'
+                e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
+              }}
+            >
+              <Download size={14} />
+              <span>Download</span>
+            </button>
+          </div>
+
+          {/* View on CyLaw — only shown when URL exists */}
+          {source.cylaw_url && (
+            <a
+              href={source.cylaw_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.cylawBtn}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.5)'
+                e.currentTarget.style.color = 'rgba(59, 130, 246, 0.9)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)'
+                e.currentTarget.style.color = 'rgba(255, 255, 255, 0.7)'
+              }}
+            >
+              <ExternalLink size={14} />
+              <span>View on CyLaw</span>
+            </a>
+          )}
+
+          {/* Error message for document access */}
+          {documentError && (
+            <div style={styles.docError}>
+              <FileText size={14} />
+              <span>{documentError}</span>
             </div>
+          )}
+
+          {/* Relevance bar */}
+          <div style={styles.relevanceRow}>
+            <div style={styles.barTrack}>
+              <div
+                style={{
+                  ...styles.barFill,
+                  width: `${relevancePct}%`,
+                  background: 'var(--accent, #06b6d4)',
+                }}
+              />
+            </div>
+            <span style={styles.relevancePct}>{relevancePct}%</span>
           </div>
 
           {/* Source text */}
@@ -134,7 +257,23 @@ export default function SourcePanel() {
                   <span>{copied ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
-              <p style={styles.sourceText}>{cleanedContent}</p>
+
+              {/* When context is expanded, show everything with the cited passage highlighted */}
+              {contextExpanded && hasContext ? (
+                <div style={styles.contextContainer}>
+                  {source.context_before && (
+                    <p style={styles.contextText}>{source.context_before}</p>
+                  )}
+                  <div style={styles.citedHighlight}>
+                    <p style={styles.citedText}>{cleanedContent}</p>
+                  </div>
+                  {source.context_after && (
+                    <p style={styles.contextText}>{source.context_after}</p>
+                  )}
+                </div>
+              ) : (
+                <p style={styles.sourceText}>{cleanedContent}</p>
+              )}
             </div>
 
             {hasContext && (
@@ -145,20 +284,6 @@ export default function SourcePanel() {
                 {contextExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 <span>{contextExpanded ? 'Hide' : 'Show'} surrounding context</span>
               </button>
-            )}
-
-            {contextExpanded && source.context_before && (
-              <div style={styles.contextBlock}>
-                <span style={styles.contextLabel}>Context before</span>
-                <p style={styles.contextText}>{source.context_before}</p>
-              </div>
-            )}
-
-            {contextExpanded && source.context_after && (
-              <div style={styles.contextBlock}>
-                <span style={styles.contextLabel}>Context after</span>
-                <p style={styles.contextText}>{source.context_after}</p>
-              </div>
             )}
           </div>
 
@@ -247,7 +372,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 20,
     display: 'flex',
     flexDirection: 'column',
-    gap: 20,
+    gap: 16,
   },
   metaSection: {
     display: 'flex',
@@ -273,11 +398,73 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: 'var(--text-3)',
   },
+
+  // Action buttons
+  actionRow: {
+    display: 'flex',
+    gap: 8,
+  },
+  openDocBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    padding: '10px 16px',
+    background: 'rgba(16, 185, 129, 0.15)',
+    border: '1px solid rgba(16, 185, 129, 0.3)',
+    borderRadius: 8,
+    color: '#10b981',
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: 'pointer',
+    transition: 'background 0.2s ease, border-color 0.2s ease',
+  },
+  downloadBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '8px 12px',
+    background: 'transparent',
+    border: '1px solid rgba(255, 255, 255, 0.15)',
+    borderRadius: 6,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    cursor: 'pointer',
+    transition: 'border-color 0.2s ease, color 0.2s ease',
+  },
+  cylawBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '8px 12px',
+    background: 'transparent',
+    border: '1px solid rgba(255, 255, 255, 0.15)',
+    borderRadius: 6,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    cursor: 'pointer',
+    textDecoration: 'none',
+    transition: 'border-color 0.2s ease, color 0.2s ease',
+    width: '100%',
+    justifyContent: 'center',
+  },
+  docError: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 12px',
+    background: 'rgba(239, 68, 68, 0.1)',
+    border: '1px solid rgba(239, 68, 68, 0.2)',
+    borderRadius: 6,
+    color: '#ef4444',
+    fontSize: 12,
+  },
+
+  // Relevance bar
   relevanceRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    marginTop: 4,
   },
   barTrack: {
     flex: 1,
@@ -298,44 +485,12 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 36,
     textAlign: 'right',
   },
+
+  // Source content
   sourceSection: {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
-  },
-  contextBlock: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-  },
-  contextLabel: {
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    color: 'var(--text-3)',
-  },
-  contextText: {
-    fontSize: 13,
-    lineHeight: 1.6,
-    color: 'var(--text-3)',
-    padding: 12,
-    background: 'var(--bg-2)',
-    borderRadius: 'var(--radius-sm)',
-    borderLeft: '3px solid var(--border)',
-    margin: 0,
-  },
-  contextToggle: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '6px 0',
-    fontSize: 12,
-    color: 'var(--text-3)',
-    cursor: 'pointer',
-    background: 'none',
-    border: 'none',
-    transition: 'color var(--transition)',
   },
   sourceBlock: {
     display: 'flex',
@@ -377,6 +532,51 @@ const styles: Record<string, React.CSSProperties> = {
     borderLeft: '3px solid var(--accent)',
     margin: 0,
   },
+
+  // Context with cited passage highlight
+  contextContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 0,
+    padding: 12,
+    background: 'var(--bg-2)',
+    borderRadius: 'var(--radius-sm)',
+  },
+  contextText: {
+    fontSize: 13,
+    lineHeight: 1.6,
+    color: 'var(--text-3)',
+    padding: '8px 12px',
+    margin: 0,
+  },
+  citedHighlight: {
+    background: 'rgba(16, 185, 129, 0.1)',
+    borderLeft: '3px solid #10b981',
+    borderRadius: '0 4px 4px 0',
+    margin: '4px 0',
+  },
+  citedText: {
+    fontSize: 14,
+    lineHeight: 1.7,
+    color: 'var(--text-1)',
+    padding: '8px 12px',
+    margin: 0,
+  },
+
+  contextToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 0',
+    fontSize: 12,
+    color: 'var(--text-3)',
+    cursor: 'pointer',
+    background: 'none',
+    border: 'none',
+    transition: 'color var(--transition)',
+  },
+
+  // Citation block
   citationSection: {
     display: 'flex',
     flexDirection: 'column',
@@ -385,6 +585,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-2)',
     borderRadius: 'var(--radius-sm)',
     border: '1px solid var(--border)',
+  },
+  contextLabel: {
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    color: 'var(--text-3)',
   },
   citationText: {
     fontSize: 12,

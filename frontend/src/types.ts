@@ -11,6 +11,7 @@ export interface SourceInfo {
   content: string
   context_before: string
   context_after: string
+  cylaw_url?: string | null
 }
 
 export interface QueryResponse {
@@ -27,6 +28,7 @@ export interface DocumentInfo {
   page_count: number
   chunks: number | null
   created_at: string | null
+  cylaw_url?: string | null
 }
 
 export interface UploadResponse {

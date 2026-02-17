@@ -11,6 +11,7 @@ import os
 import json
 import time
 import uuid
+import shutil
 import logging
 import tempfile
 from typing import Optional
@@ -18,7 +19,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -34,6 +35,68 @@ from .language_patterns import LLM_PROMPTS
 # Load environment variables
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Persistent storage directory for uploaded document files
+DOCUMENT_STORAGE_DIR = Path(os.getenv("DOCUMENT_STORAGE_DIR", "document_files"))
+DOCUMENT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# =============================================================================
+# File type detection & CyLaw URL helpers
+# =============================================================================
+
+def detect_media_type(file_path: Path) -> str:
+    """Detect actual file type by reading magic bytes."""
+    with open(file_path, "rb") as f:
+        header = f.read(256)
+    if header.startswith(b"%PDF-"):
+        return "application/pdf"
+    # HTML may have BOM or whitespace before doctype
+    text = header.lstrip()
+    if text[:9].lower().startswith((b"<!doctype", b"<html")):
+        return "text/html"
+    return "application/octet-stream"
+
+
+def _find_document_file(document_id: str) -> Path | None:
+    """Find a stored document file regardless of extension."""
+    candidates = list(DOCUMENT_STORAGE_DIR.glob(f"{document_id}.*"))
+    if candidates:
+        return candidates[0]
+    # Legacy: try bare .pdf
+    legacy = DOCUMENT_STORAGE_DIR / f"{document_id}.pdf"
+    if legacy.exists():
+        return legacy
+    return None
+
+
+def generate_cylaw_url(stem: str) -> str | None:
+    """Generate a CyLaw index-page URL from a document filename stem.
+
+    Returns the index URL (the browsable page), or None if the stem
+    doesn't match the expected pattern.
+    """
+    if not stem:
+        return None
+    # Handle _EKS suffix — strip it for URL generation
+    clean = stem.replace("_EKS", "")
+    parts = clean.split("_")
+    # Standard pattern: YYYY_V_NNN  (e.g. 1960_1_002)
+    if len(parts) >= 3 and parts[0].isdigit() and parts[-1].isdigit():
+        # Index URLs strip leading zeros from the number segment
+        parts_norm = list(parts)
+        parts_norm[-1] = str(int(parts_norm[-1]))
+        normalized = "_".join(parts_norm)
+        return f"https://www.cylaw.org/nomoi/indexes/{normalized}.html"
+    # CAP-style (e.g. CAP351) — no index page available
+    return None
+
+
+def _stem_from_file_path(file_path: str | None) -> str | None:
+    """Extract filename stem from a stored file_path value."""
+    if not file_path:
+        return None
+    return Path(file_path).stem
 
 app = FastAPI(
     title="Legal RAG API",
@@ -266,6 +329,10 @@ async def upload_document(
         chunk_texts = [c.content for c in chunks]
         embeddings = services["embeddings"].embed_documents(chunk_texts)
 
+        # Persist original PDF for later viewing/download
+        stored_path = DOCUMENT_STORAGE_DIR / f"{parsed.metadata.document_id}.pdf"
+        shutil.copy2(tmp_path, stored_path)
+
         # Store
         store.insert_document(
             document_id=parsed.metadata.document_id,
@@ -273,7 +340,7 @@ async def upload_document(
             document_type=parsed.metadata.document_type,
             client_id=client_id,
             jurisdiction=parsed.metadata.jurisdiction,
-            file_path=tmp_path,
+            file_path=str(stored_path),
             page_count=parsed.metadata.page_count,
         )
         chunk_dicts = [c.to_dict() for c in chunks]
@@ -310,17 +377,56 @@ async def list_documents(
     """List all documents for the authenticated tenant."""
     store = _container.get_store()
     docs = store.list_documents(client_id=client["client_id"])
-    return [
-        DocumentInfo(
+    result = []
+    for d in docs:
+        # Derive CyLaw URL from metadata stem or file_path
+        meta = d.get("metadata") or {}
+        stem = meta.get("source_stem") or _stem_from_file_path(d.get("file_path"))
+        result.append(DocumentInfo(
             id=str(d["id"]),
             title=d["title"],
             document_type=d["document_type"],
             jurisdiction=d.get("jurisdiction"),
             page_count=d.get("page_count", 0),
             created_at=str(d.get("created_at", "")),
+            cylaw_url=generate_cylaw_url(stem),
+        ))
+    return result
+
+
+@app.get("/api/v1/documents/{document_id}/file")
+async def get_document_file(
+    document_id: str,
+    client: dict = Depends(get_authenticated_client),
+):
+    """Serve the original document for viewing or download (tenant-isolated).
+
+    Detects actual file type (HTML vs PDF) and serves the correct Content-Type.
+    """
+    store = _container.get_store()
+    client_id = client["client_id"]
+
+    # Verify the document belongs to this tenant
+    docs = store.list_documents(client_id=client_id)
+    doc = next((d for d in docs if str(d["id"]) == document_id), None)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = _find_document_file(document_id)
+    if not file_path:
+        raise HTTPException(
+            status_code=404,
+            detail="Original file not available. Documents uploaded before file storage was enabled cannot be viewed.",
         )
-        for d in docs
-    ]
+
+    media_type = detect_media_type(file_path)
+    ext = ".html" if "html" in media_type else (".pdf" if "pdf" in media_type else file_path.suffix)
+    title = doc.get("title", document_id)
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=f"{title}{ext}",
+    )
 
 
 @app.delete("/api/v1/documents/{document_id}")
@@ -335,6 +441,11 @@ async def delete_document(
         deleted = store.delete_document(document_id, client_id=client_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Document not found")
+
+        # Remove stored file (any extension)
+        stored_file = _find_document_file(document_id)
+        if stored_file:
+            stored_file.unlink()
 
         # Invalidate answer cache (deleted document may have been in cached answers)
         _invalidate_client_cache(client_id)
@@ -419,9 +530,16 @@ async def query_documents(
             latency_ms=(time.time() - start_time) * 1000,
         )
 
-    # Look up real document titles for citation accuracy
+    # Look up document titles + metadata for citation accuracy & CyLaw URLs
     doc_ids = list(set(r.document_id for r in results))
-    doc_titles = store.get_document_titles(doc_ids, client_id=client_id)
+    doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
+    doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
+
+    # Pre-compute CyLaw URLs per document
+    doc_cylaw_urls: dict[str, str | None] = {}
+    for did, meta in doc_source_meta.items():
+        stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path"))
+        doc_cylaw_urls[did] = generate_cylaw_url(stem)
 
     # Citations
     cited_contents = services["citation_extractor"].extract(
@@ -477,6 +595,7 @@ async def query_documents(
             content=cc.content,
             context_before=cc.context_before or "",
             context_after=cc.context_after or "",
+            cylaw_url=doc_cylaw_urls.get(cc.citation.document_id),
         ))
 
     # Cache the full pipeline result (answer + sources) for future identical queries
@@ -569,7 +688,12 @@ async def query_documents_stream(
 
         # Build citations + sources
         doc_ids = list(set(r.document_id for r in results))
-        doc_titles = store.get_document_titles(doc_ids, client_id=client_id)
+        doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
+        doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
+        doc_cylaw_urls: dict[str, str | None] = {}
+        for did, meta in doc_source_meta.items():
+            stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path"))
+            doc_cylaw_urls[did] = generate_cylaw_url(stem)
         cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
 
         sources_list = []
@@ -587,6 +711,7 @@ async def query_documents_stream(
                 content=cc.content,
                 context_before=cc.context_before or "",
                 context_after=cc.context_after or "",
+                cylaw_url=doc_cylaw_urls.get(cc.citation.document_id),
             ))
 
         # Send sources immediately so frontend can show them while answer streams
