@@ -120,9 +120,9 @@ const badgeStyles: Record<string, React.CSSProperties> = {
 }
 
 const THINKING_MESSAGES = [
-  'Searching through documents\u2026',
+  'Searching through legal documents\u2026',
   'Analyzing relevant sections\u2026',
-  'Preparing response\u2026',
+  'Preparing your response\u2026',
 ]
 
 function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; sourceCount: number }) {
@@ -136,8 +136,8 @@ function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; s
       setTimeout(() => {
         setStatusIndex((prev) => (prev + 1) % THINKING_MESSAGES.length)
         setTextVisible(true)
-      }, 200)
-    }, 2500)
+      }, 500)
+    }, 4000)
     return () => clearInterval(interval)
   }, [hasSources])
 
@@ -166,7 +166,7 @@ function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; s
             </span>
           </div>
           <div style={thinkingStyles.skeletonGroup}>
-            {[90, 75, 60].map((w, i) => (
+            {[85, 70, 55].map((w, i) => (
               <div
                 key={i}
                 style={{
@@ -195,14 +195,14 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: 'var(--accent)',
+    background: '#2dd4bf',
     animation: 'pulseDot 1.5s ease-in-out infinite',
     flexShrink: 0,
   },
   statusText: {
-    fontSize: 12,
-    color: 'var(--text-2)',
-    transition: 'opacity 0.2s ease',
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.5)',
+    transition: 'opacity 0.5s ease',
   },
   skeletonGroup: {
     display: 'flex',
@@ -210,9 +210,9 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   skeletonLine: {
-    height: 12,
-    borderRadius: 6,
-    background: 'linear-gradient(90deg, var(--bg-3) 25%, var(--bg-hover) 50%, var(--bg-3) 75%)',
+    height: 14,
+    borderRadius: 4,
+    background: 'linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.06) 75%)',
     backgroundSize: '200% 100%',
     animation: 'shimmerSlide 1.8s ease-in-out infinite',
   },
@@ -226,7 +226,7 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: 'var(--accent)',
     fontWeight: 500,
-    animation: 'slideUpFadeIn 0.3s ease',
+    animation: 'slideUpFadeIn 0.3s ease-out forwards',
   },
   generatingRow: {
     display: 'flex',
@@ -235,6 +235,7 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     marginTop: 10,
     fontSize: 12,
     color: 'var(--text-3)',
+    animation: 'fadeIn 0.3s ease',
   },
 }
 
@@ -249,6 +250,25 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
       setTimeout(() => setCopied(false), 2000)
     })
   }
+
+  // Smooth transition: thinking → streaming content
+  const [isFadingOut, setIsFadingOut] = useState(false)
+  const wasThinkingRef = useRef(true)
+
+  useEffect(() => {
+    if (isStreaming && wasThinkingRef.current && message.content !== '') {
+      // First token arrived — fade out thinking indicator
+      setIsFadingOut(true)
+      const timer = setTimeout(() => setIsFadingOut(false), 300)
+      wasThinkingRef.current = false
+      return () => clearTimeout(timer)
+    }
+    if (message.content === '') {
+      wasThinkingRef.current = true
+    }
+  }, [isStreaming, message.content])
+
+  const showThinkingUI = isStreaming && (message.content === '' || isFadingOut)
 
   const parts = useMemo(
     () => (isUser ? null : parseCitations(message.content)),
@@ -268,20 +288,25 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
   const renderAssistantContent = () => {
     if (!parts) return null
 
-    // Phase 1 & 2: Show thinking indicator while waiting for content
-    if (isStreaming && message.content === '') {
+    // Phase 1 & 2: Thinking indicator with smooth fade-out when content arrives
+    if (showThinkingUI) {
       return (
-        <ThinkingIndicator
-          hasSources={!!message.sources && message.sources.length > 0}
-          sourceCount={message.sources?.length || 0}
-        />
+        <div style={{
+          opacity: isFadingOut ? 0 : 1,
+          transition: 'opacity 0.3s ease-out',
+        }}>
+          <ThinkingIndicator
+            hasSources={!!message.sources && message.sources.length > 0}
+            sourceCount={message.sources?.length || 0}
+          />
+        </div>
       )
     }
 
     if (message.content === '') return null
 
-    // Phase 3: Content is streaming in — subtle fade-in on first appearance
-    const streamEnter = isStreaming ? { animation: 'fadeIn 0.15s ease' } : {}
+    // Phase 3: Content fades in after thinking fades out
+    const streamEnter = isStreaming ? { animation: 'fadeIn 0.2s ease-in' } : {}
 
     // Check if the content has any markdown formatting
     const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)
@@ -355,7 +380,7 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
         ) : (
           renderAssistantContent()
         )}
-        {!isUser && !(isStreaming && message.content === '') && (
+        {!isUser && !showThinkingUI && (
           <div style={styles.meta}>
             {message.latency_ms != null && (
               <>
