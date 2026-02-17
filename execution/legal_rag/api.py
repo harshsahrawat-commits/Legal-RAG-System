@@ -58,10 +58,11 @@ def _find_document_file(document_id: str) -> Path | None:
 
 
 def generate_cylaw_url(stem: str) -> str | None:
-    """Generate a CyLaw index-page URL from a document filename stem.
+    """Generate a CyLaw PDF URL from a document filename stem.
 
-    Returns the index URL (the browsable page), or None if the stem
-    doesn't match the expected pattern.
+    Points to /nomoi/arith/ which hosts the original law PDFs and has
+    coverage for all laws (unlike /nomoi/indexes/ which only has
+    consolidated texts for a subset).
     """
     if not stem:
         return None
@@ -70,12 +71,8 @@ def generate_cylaw_url(stem: str) -> str | None:
     parts = clean.split("_")
     # Standard pattern: YYYY_V_NNN  (e.g. 1960_1_002)
     if len(parts) >= 3 and parts[0].isdigit() and parts[-1].isdigit():
-        # Index URLs strip leading zeros from the number segment
-        parts_norm = list(parts)
-        parts_norm[-1] = str(int(parts_norm[-1]))
-        normalized = "_".join(parts_norm)
-        return f"https://www.cylaw.org/nomoi/indexes/{normalized}.html"
-    # CAP-style (e.g. CAP351) — no index page available
+        return f"https://www.cylaw.org/nomoi/arith/{clean}.pdf"
+    # CAP-style (e.g. CAP351) — no direct link available
     return None
 
 
