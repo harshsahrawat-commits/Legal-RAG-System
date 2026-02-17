@@ -128,7 +128,7 @@ const THINKING_MESSAGES = [
 function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; sourceCount: number }) {
   const [statusIndex, setStatusIndex] = useState(0)
   const [textVisible, setTextVisible] = useState(true)
-  const fadeTimer = useRef<ReturnType<typeof setTimeout>>()
+  const fadeTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     if (hasSources) return
