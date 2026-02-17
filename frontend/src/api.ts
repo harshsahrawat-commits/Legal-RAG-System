@@ -54,8 +54,6 @@ export const api = {
       })
     },
     delete: (id: string) => client.delete(`/api/v1/documents/${id}`),
-    getFile: (id: string) =>
-      client.get(`/api/v1/documents/${id}/file`, { responseType: 'blob' }),
   },
 
   query: (query: string, documentId?: string, topK?: number) =>

@@ -19,7 +19,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -42,21 +42,8 @@ DOCUMENT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =============================================================================
-# File type detection & CyLaw URL helpers
+# CyLaw URL helpers & file lookup
 # =============================================================================
-
-def detect_media_type(file_path: Path) -> str:
-    """Detect actual file type by reading magic bytes."""
-    with open(file_path, "rb") as f:
-        header = f.read(256)
-    if header.startswith(b"%PDF-"):
-        return "application/pdf"
-    # HTML may have BOM or whitespace before doctype
-    text = header.lstrip()
-    if text[:9].lower().startswith((b"<!doctype", b"<html")):
-        return "text/html"
-    return "application/octet-stream"
-
 
 def _find_document_file(document_id: str) -> Path | None:
     """Find a stored document file regardless of extension."""
@@ -392,41 +379,6 @@ async def list_documents(
             cylaw_url=generate_cylaw_url(stem),
         ))
     return result
-
-
-@app.get("/api/v1/documents/{document_id}/file")
-async def get_document_file(
-    document_id: str,
-    client: dict = Depends(get_authenticated_client),
-):
-    """Serve the original document for viewing or download (tenant-isolated).
-
-    Detects actual file type (HTML vs PDF) and serves the correct Content-Type.
-    """
-    store = _container.get_store()
-    client_id = client["client_id"]
-
-    # Verify the document belongs to this tenant
-    docs = store.list_documents(client_id=client_id)
-    doc = next((d for d in docs if str(d["id"]) == document_id), None)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    file_path = _find_document_file(document_id)
-    if not file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Original file not available. Documents uploaded before file storage was enabled cannot be viewed.",
-        )
-
-    media_type = detect_media_type(file_path)
-    ext = ".html" if "html" in media_type else (".pdf" if "pdf" in media_type else file_path.suffix)
-    title = doc.get("title", document_id)
-    return FileResponse(
-        path=str(file_path),
-        media_type=media_type,
-        filename=f"{title}{ext}",
-    )
 
 
 @app.delete("/api/v1/documents/{document_id}")
