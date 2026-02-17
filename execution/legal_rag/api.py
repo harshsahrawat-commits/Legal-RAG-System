@@ -69,10 +69,12 @@ def generate_cylaw_url(stem: str) -> str | None:
     # Handle _EKS suffix — strip it for URL generation
     clean = stem.replace("_EKS", "")
     parts = clean.split("_")
-    # Standard pattern: YYYY_V_NNN  (e.g. 1960_1_002)
+    # Standard pattern: YYYY_V_NNN  (e.g. 1960_1_002, 2007_2_029, 2004_3_018)
     if len(parts) >= 3 and parts[0].isdigit() and parts[-1].isdigit():
         return f"https://www.cylaw.org/nomoi/arith/{clean}.pdf"
-    # CAP-style (e.g. CAP351) — no direct link available
+    # CAP-style (e.g. CAP154, CAP029A)
+    if clean.upper().startswith("CAP"):
+        return f"https://www.cylaw.org/nomoi/arith/{clean.upper()}.pdf"
     return None
 
 
@@ -87,19 +89,29 @@ def _stem_from_title(title: str | None) -> str | None:
     """Derive a CyLaw filename stem from a document title.
 
     Cypriot law titles contain the law identifier, e.g.:
-    'Ο περί ... Νόμος του 2020 (123(I)/2020)' → '2020_1_123'
-    'Ο περί ... Νόμος του 2011 (47(Ι)/2011)'  → '2011_1_047'
-    Handles both Latin (I) and Greek (Ι) capital iota.
+    'Ο περί ... Νόμος του 2020 (123(I)/2020)'   → '2020_1_123'
+    'Ο περί ... Νόμος του 2011 (47(Ι)/2011)'    → '2011_1_047'
+    'Οι περί ... Κανονισμοί του 2007 (29(II)/2007)' → '2007_2_029'
+    'Ο περί ... Διάταγμα (18(III)/2004)'         → '2004_3_018'
+    Handles both Latin (I/II/III) and Greek (Ι/ΙΙ/ΙΙΙ) iota.
     """
     if not title:
         return None
     import re
-    # Pattern: N(I)/YYYY or N(Ι)/YYYY — Latin or Greek iota
-    m = re.search(r"(\d+)\s*\([IΙ]\)\s*/?\s*(\d{4})", title)
+    # Volume mapping: (I)→1, (II)→2, (III)→3 — Latin or Greek iota
+    for roman, volume in [("III", "3"), ("II", "2"), ("I", "1")]:
+        # Match both Latin I and Greek Ι
+        greek_roman = roman.replace("I", "Ι")
+        pattern = rf"(\d+)\s*\((?:{roman}|{greek_roman})\)\s*/?\s*(\d{{4}})"
+        m = re.search(pattern, title)
+        if m:
+            number = m.group(1)
+            year = m.group(2)
+            return f"{year}_{volume}_{number.zfill(3)}"
+    # CAP-style: "Κεφ. 154" or "Cap. 154" or "CAP 154"
+    m = re.search(r"(?:Κεφ\.|Cap\.|CAP)\s*(\d+[A-Z]?)", title, re.IGNORECASE)
     if m:
-        number = m.group(1)
-        year = m.group(2)
-        return f"{year}_1_{number.zfill(3)}"
+        return f"CAP{m.group(1)}"
     return None
 
 app = FastAPI(
