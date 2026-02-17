@@ -39,6 +39,9 @@ COPY execution/ execution/
 COPY cloud_migrate.py .
 COPY create_api_key.py .
 
+# Create writable directories for non-root user
+RUN mkdir -p document_files && chown appuser:appuser document_files
+
 # Set cache directories to writable locations
 ENV HF_HOME=/tmp/huggingface
 ENV XDG_CACHE_HOME=/tmp/cache
