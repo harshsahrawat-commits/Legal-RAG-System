@@ -268,10 +268,11 @@ def migrate(
 
     stats = {"copied": 0, "skipped_existing": 0, "errors": 0, "db_updated": 0}
     total = len(matches)
+    db_updates = []  # Collect all updates, batch at the end
 
     for i, (source_path, doc_id, title, method, stem) in enumerate(matches, 1):
         # Progress reporting
-        if i % 100 == 0 or i == total:
+        if i % 500 == 0 or i == total:
             logger.info(f"  Progress: {i}/{total} ({i*100//total}%)")
 
         # Detect actual file type
@@ -281,20 +282,18 @@ def migrate(
 
         if dry_run:
             eks_note = " [EKS preferred]" if "_EKS" in stem else ""
-            logger.info(f"MATCHED: {source_path.name} → {doc_id[:12]}... ({title[:60]}){eks_note}")
+            logger.info(f"MATCHED: {source_path.name} -> {doc_id[:12]}... ({title[:60]}){eks_note}")
             stats["copied"] += 1
             continue
 
         # Skip if destination already exists (resumable)
         if dest_path.exists():
-            logger.debug(f"SKIP (exists): {dest_path.name}")
             stats["skipped_existing"] += 1
             continue
 
         # Also check for other extensions (might already be migrated with different ext)
         existing = list(storage_dir.glob(f"{doc_id}.*"))
         if existing:
-            logger.debug(f"SKIP (exists as {existing[0].suffix}): {doc_id}")
             stats["skipped_existing"] += 1
             continue
 
@@ -302,22 +301,32 @@ def migrate(
         try:
             shutil.copy2(str(source_path), str(dest_path))
             stats["copied"] += 1
-
-            # Update database
-            update_document_file_path(conn, doc_id, str(dest_path), stem)
-            stats["db_updated"] += 1
-
+            db_updates.append((str(dest_path), json.dumps({"source_stem": stem}), doc_id))
         except Exception as e:
             logger.error(f"ERROR copying {source_path.name}: {e}")
             stats["errors"] += 1
 
-    # Commit all DB updates at once
-    if not dry_run:
+    # Batch all DB updates in one round-trip
+    if not dry_run and db_updates:
         try:
+            logger.info(f"Sending {len(db_updates)} DB updates in batch...")
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_batch(
+                    cur,
+                    """
+                    UPDATE legal_documents
+                    SET file_path = %s,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                    WHERE id = %s::uuid
+                    """,
+                    db_updates,
+                    page_size=500,
+                )
             conn.commit()
+            stats["db_updated"] = len(db_updates)
             logger.info(f"Database committed: {stats['db_updated']} records updated")
         except Exception as e:
-            logger.error(f"Database commit failed: {e}")
+            logger.error(f"Database batch update failed: {e}")
             conn.rollback()
 
     return stats
