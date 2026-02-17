@@ -11,61 +11,6 @@ const SUGGESTED_QUESTIONS = [
   'What are the liability limitations?',
 ]
 
-function SkeletonLoader() {
-  return (
-    <div style={skeletonStyles.row}>
-      <div style={skeletonStyles.avatar} />
-      <div style={skeletonStyles.bubble}>
-        <div style={{ ...skeletonStyles.line, width: '90%' }} />
-        <div style={{ ...skeletonStyles.line, width: '75%' }} />
-        <div style={{ ...skeletonStyles.line, width: '60%' }} />
-        <div style={skeletonStyles.metaRow}>
-          <div style={{ ...skeletonStyles.line, width: 40, height: 10 }} />
-          <div style={{ ...skeletonStyles.line, width: 60, height: 10 }} />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const skeletonStyles: Record<string, React.CSSProperties> = {
-  row: {
-    display: 'flex',
-    alignItems: 'flex-end',
-    gap: 10,
-    padding: '4px 24px',
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: '50%',
-    background: 'var(--bg-3)',
-    flexShrink: 0,
-    animation: 'shimmer 1.5s ease-in-out infinite',
-  },
-  bubble: {
-    padding: '12px 16px',
-    borderRadius: 'var(--radius-md, 8px)',
-    background: 'var(--bg-2)',
-    maxWidth: '80%',
-    minWidth: 280,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-  },
-  line: {
-    height: 14,
-    borderRadius: 4,
-    background: 'var(--bg-3)',
-    animation: 'shimmer 1.5s ease-in-out infinite',
-  },
-  metaRow: {
-    display: 'flex',
-    gap: 8,
-    marginTop: 4,
-  },
-}
-
 let _msgCounter = 0
 function nextId() { return `msg-${Date.now()}-${++_msgCounter}` }
 
@@ -210,10 +155,13 @@ export default function ChatInterface() {
             </div>
           </div>
         )}
-        {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
+        {messages.map((msg, i) => (
+          <ChatMessage
+            key={msg.id}
+            message={msg}
+            isStreaming={loading && i === messages.length - 1 && msg.role === 'assistant'}
+          />
         ))}
-        {loading && messages.length > 0 && messages[messages.length - 1].content === '' && <SkeletonLoader />}
       </div>
 
       <form onSubmit={handleSubmit} style={styles.inputBar}>

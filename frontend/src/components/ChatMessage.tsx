@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect } from 'react'
-import { User, Bot, Clock, Copy, Check, AlertCircle } from 'lucide-react'
+import { User, Bot, Clock, Copy, Check, AlertCircle, FileText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage as ChatMessageType, SourceInfo } from '../types'
@@ -8,6 +8,7 @@ import { useStore } from '../store'
 
 interface Props {
   message: ChatMessageType
+  isStreaming?: boolean
 }
 
 function CitationBadge({
@@ -118,7 +119,126 @@ const badgeStyles: Record<string, React.CSSProperties> = {
   },
 }
 
-export default function ChatMessage({ message }: Props) {
+const THINKING_MESSAGES = [
+  'Searching through documents\u2026',
+  'Analyzing relevant sections\u2026',
+  'Preparing response\u2026',
+]
+
+function ThinkingIndicator({ hasSources, sourceCount }: { hasSources: boolean; sourceCount: number }) {
+  const [statusIndex, setStatusIndex] = useState(0)
+  const [textVisible, setTextVisible] = useState(true)
+
+  useEffect(() => {
+    if (hasSources) return
+    const interval = setInterval(() => {
+      setTextVisible(false)
+      setTimeout(() => {
+        setStatusIndex((prev) => (prev + 1) % THINKING_MESSAGES.length)
+        setTextVisible(true)
+      }, 200)
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [hasSources])
+
+  return (
+    <div style={{ minWidth: 260, animation: 'fadeIn 0.25s ease' }}>
+      {hasSources ? (
+        <>
+          <div style={thinkingStyles.sourcesBadge}>
+            <FileText size={12} />
+            <span>{sourceCount} source{sourceCount !== 1 ? 's' : ''} found</span>
+          </div>
+          <div style={thinkingStyles.generatingRow}>
+            <span style={thinkingStyles.pulseDot} />
+            <span>Generating answer\u2026</span>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={thinkingStyles.statusRow}>
+            <span style={thinkingStyles.pulseDot} />
+            <span style={{
+              ...thinkingStyles.statusText,
+              opacity: textVisible ? 1 : 0,
+            }}>
+              {THINKING_MESSAGES[statusIndex]}
+            </span>
+          </div>
+          <div style={thinkingStyles.skeletonGroup}>
+            {[90, 75, 60].map((w, i) => (
+              <div
+                key={i}
+                style={{
+                  ...thinkingStyles.skeletonLine,
+                  width: `${w}%`,
+                  animationDelay: `${i * 0.15}s`,
+                }}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+const thinkingStyles: Record<string, React.CSSProperties> = {
+  statusRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  pulseDot: {
+    display: 'inline-block',
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    background: 'var(--accent)',
+    animation: 'pulseDot 1.5s ease-in-out infinite',
+    flexShrink: 0,
+  },
+  statusText: {
+    fontSize: 12,
+    color: 'var(--text-2)',
+    transition: 'opacity 0.2s ease',
+  },
+  skeletonGroup: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8,
+  },
+  skeletonLine: {
+    height: 12,
+    borderRadius: 6,
+    background: 'linear-gradient(90deg, var(--bg-3) 25%, var(--bg-hover) 50%, var(--bg-3) 75%)',
+    backgroundSize: '200% 100%',
+    animation: 'shimmerSlide 1.8s ease-in-out infinite',
+  },
+  sourcesBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 10px',
+    background: 'var(--accent-dim)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: 12,
+    color: 'var(--accent)',
+    fontWeight: 500,
+    animation: 'slideUpFadeIn 0.3s ease',
+  },
+  generatingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+    fontSize: 12,
+    color: 'var(--text-3)',
+  },
+}
+
+export default function ChatMessage({ message, isStreaming = false }: Props) {
   const openSourcePanel = useStore((s) => s.openSourcePanel)
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
@@ -147,8 +267,21 @@ export default function ChatMessage({ message }: Props) {
 
   const renderAssistantContent = () => {
     if (!parts) return null
-    // During streaming: show nothing until first token arrives (skeleton covers this)
+
+    // Phase 1 & 2: Show thinking indicator while waiting for content
+    if (isStreaming && message.content === '') {
+      return (
+        <ThinkingIndicator
+          hasSources={!!message.sources && message.sources.length > 0}
+          sourceCount={message.sources?.length || 0}
+        />
+      )
+    }
+
     if (message.content === '') return null
+
+    // Phase 3: Content is streaming in — subtle fade-in on first appearance
+    const streamEnter = isStreaming ? { animation: 'fadeIn 0.15s ease' } : {}
 
     // Check if the content has any markdown formatting
     const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)
@@ -156,7 +289,7 @@ export default function ChatMessage({ message }: Props) {
     if (!hasMarkdown) {
       // Plain text with citations
       return (
-        <div style={styles.text}>
+        <div style={{ ...styles.text, ...streamEnter }}>
           {parts.map((part, i) =>
             part.type === 'text' ? (
               <span key={i}>{part.content}</span>
@@ -176,7 +309,7 @@ export default function ChatMessage({ message }: Props) {
 
     // Markdown content: render text segments as markdown, keep citation badges inline
     return (
-      <div style={styles.markdown}>
+      <div style={{ ...styles.markdown, ...streamEnter }}>
         {parts.map((part, i) =>
           part.type === 'text' ? (
             <ReactMarkdown key={i} remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -222,7 +355,7 @@ export default function ChatMessage({ message }: Props) {
         ) : (
           renderAssistantContent()
         )}
-        {!isUser && (
+        {!isUser && !(isStreaming && message.content === '') && (
           <div style={styles.meta}>
             {message.latency_ms != null && (
               <>
