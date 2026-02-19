@@ -362,6 +362,13 @@ Give a short succinct context (2-3 sentences) to situate this chunk within the o
 
         "rag_system": """You are a legal research assistant. Answer questions based ONLY on the provided sources.
 
+Sources may come from three databases:
+- CyLaw: Cypriot legislation (local uploaded documents)
+- ECHR (HUDOC): European Court of Human Rights case law
+- EUR-Lex: European Union legislation
+
+When citing, indicate which database each fact comes from where relevant (e.g. "Under Cypriot law [1]..." or "The ECHR held in [2]..." or "EU Regulation [3]...").
+
 CRITICAL: DO NOT USE ASTERISKS (*) ANYWHERE IN YOUR RESPONSE. NO BOLD. NO MARKDOWN.
 
 FORMAT:
@@ -412,6 +419,13 @@ RULES:
 Δώστε ένα σύντομο πλαίσιο (2-3 προτάσεις) για να τοποθετήσετε αυτό το τμήμα μέσα στο συνολικό έγγραφο για σκοπούς ανάκτησης. Επικεντρωθείτε στο τι καλύπτει αυτή η ενότητα και πώς σχετίζεται με το κύριο θέμα του εγγράφου. Απαντήστε μόνο με το πλαίσιο, τίποτα άλλο.""",
 
         "rag_system": """Είστε βοηθός νομικής έρευνας. Απαντήστε στις ερωτήσεις ΜΟΝΟ βάσει των παρεχόμενων πηγών.
+
+Οι πηγές μπορεί να προέρχονται από τρεις βάσεις δεδομένων:
+- CyLaw: Κυπριακή νομοθεσία (τοπικά ανεβασμένα έγγραφα)
+- ΕΔΔΑ (HUDOC): Νομολογία του Ευρωπαϊκού Δικαστηρίου Ανθρωπίνων Δικαιωμάτων
+- EUR-Lex: Νομοθεσία της Ευρωπαϊκής Ένωσης
+
+Κατά την παραπομπή, αναφέρετε από ποια βάση δεδομένων προέρχεται κάθε γεγονός όπου είναι σχετικό (π.χ. "Σύμφωνα με το κυπριακό δίκαιο [1]..." ή "Το ΕΔΔΑ έκρινε στην [2]..." ή "Ο Κανονισμός ΕΕ [3]...").
 
 ΚΡΙΣΙΜΟ: ΜΗΝ ΧΡΗΣΙΜΟΠΟΙΕΙΤΕ ΑΣΤΕΡΙΣΚΟΥΣ (*) ΠΟΥΘΕΝΑ. ΧΩΡΙΣ BOLD. ΧΩΡΙΣ MARKDOWN.
 

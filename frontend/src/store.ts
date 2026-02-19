@@ -1,18 +1,34 @@
 import { create } from 'zustand'
-import type { SourceInfo, ChatMessage } from './types'
+import type { SourceInfo, SourceToggles, ChatMessage, UserInfo, Conversation } from './types'
 
 interface AppState {
-  apiKey: string | null
+  // Auth (JWT-based)
+  jwt: string | null
+  user: UserInfo | null
   isAuthenticated: boolean
-  setApiKey: (key: string) => void
+  setAuth: (token: string, user: UserInfo) => void
   logout: () => void
 
+  // Legacy API key support (kept for backward compat)
+  apiKey: string | null
+  setApiKey: (key: string) => void
+
+  // Messages (current conversation)
   messages: ChatMessage[]
   setMessages: (msgs: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void
   clearMessages: () => void
 
+  // Conversations
+  conversations: Conversation[]
+  setConversations: (convos: Conversation[]) => void
+  activeConversationId: string | null
+  setActiveConversationId: (id: string | null) => void
+
   selectedDocumentId: string | null
   setSelectedDocumentId: (id: string | null) => void
+
+  sourceToggles: SourceToggles
+  setSourceToggle: (source: keyof SourceToggles, enabled: boolean) => void
 
   sourcePanelOpen: boolean
   selectedSourceIndex: number
@@ -20,26 +36,36 @@ interface AppState {
   openSourcePanel: (index: number, sources: SourceInfo[]) => void
   closeSourcePanel: () => void
   navigateSource: (direction: 'prev' | 'next') => void
+
+  // Settings page visibility
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
 }
 
-function loadMessages(): ChatMessage[] {
+function loadUser(): UserInfo | null {
   try {
-    const raw = sessionStorage.getItem('chatMessages')
-    return raw ? JSON.parse(raw) : []
+    const raw = localStorage.getItem('user')
+    return raw ? JSON.parse(raw) : null
   } catch {
-    return []
+    return null
   }
 }
 
-function saveMessages(msgs: ChatMessage[]) {
-  try {
-    sessionStorage.setItem('chatMessages', JSON.stringify(msgs))
-  } catch { /* quota exceeded */ }
-}
-
 export const useStore = create<AppState>((set, get) => ({
+  // Auth — check JWT first, fall back to legacy apiKey
+  jwt: localStorage.getItem('jwt'),
+  user: loadUser(),
+  isAuthenticated: !!(localStorage.getItem('jwt') || localStorage.getItem('apiKey')),
+
   apiKey: localStorage.getItem('apiKey'),
-  isAuthenticated: !!localStorage.getItem('apiKey'),
+
+  setAuth: (token: string, user: UserInfo) => {
+    localStorage.setItem('jwt', token)
+    localStorage.setItem('user', JSON.stringify(user))
+    // Clear legacy key if present
+    localStorage.removeItem('apiKey')
+    set({ jwt: token, user, apiKey: null, isAuthenticated: true })
+  },
 
   setApiKey: (key: string) => {
     localStorage.setItem('apiKey', key)
@@ -47,24 +73,42 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   logout: () => {
+    localStorage.removeItem('jwt')
+    localStorage.removeItem('user')
     localStorage.removeItem('apiKey')
     sessionStorage.removeItem('chatMessages')
-    set({ apiKey: null, isAuthenticated: false, messages: [] })
+    set({
+      jwt: null,
+      user: null,
+      apiKey: null,
+      isAuthenticated: false,
+      messages: [],
+      conversations: [],
+      activeConversationId: null,
+    })
   },
 
-  messages: loadMessages(),
+  messages: [],
   setMessages: (msgs) => {
     const newMsgs = typeof msgs === 'function' ? msgs(get().messages) : msgs
-    saveMessages(newMsgs)
     set({ messages: newMsgs })
   },
   clearMessages: () => {
-    sessionStorage.removeItem('chatMessages')
     set({ messages: [] })
   },
 
+  conversations: [],
+  setConversations: (convos) => set({ conversations: convos }),
+  activeConversationId: null,
+  setActiveConversationId: (id) => set({ activeConversationId: id }),
+
   selectedDocumentId: null,
   setSelectedDocumentId: (id) => set({ selectedDocumentId: id }),
+
+  sourceToggles: { cylaw: true, hudoc: true, eurlex: true },
+  setSourceToggle: (source, enabled) => set((state) => ({
+    sourceToggles: { ...state.sourceToggles, [source]: enabled },
+  })),
 
   sourcePanelOpen: false,
   selectedSourceIndex: 0,
@@ -86,4 +130,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ selectedSourceIndex: selectedSourceIndex + 1 })
     }
   },
+
+  settingsOpen: false,
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
 }))

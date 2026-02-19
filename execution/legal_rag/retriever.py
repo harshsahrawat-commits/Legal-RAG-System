@@ -572,6 +572,7 @@ class HybridRetriever:
         top_k: Optional[int] = None,
         use_cache: bool = True,
         query_embedding: Optional[list[float]] = None,
+        source_origins: Optional[list[str]] = None,
     ) -> list[SearchResult]:
         """
         Retrieve relevant chunks for a query.
@@ -589,6 +590,7 @@ class HybridRetriever:
             document_id: Optional document filter
             top_k: Number of results (defaults to config)
             use_cache: Whether to check/use semantic result cache
+            source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc", "eurlex"])
 
         Returns:
             List of SearchResult objects, ranked by relevance
@@ -690,6 +692,7 @@ class HybridRetriever:
                 top_k=effective_config.vector_top_k,
                 client_id=client_id,
                 document_id=document_id,
+                source_origins=source_origins,
             )
             all_vector_results.extend(vector_results)
 
@@ -700,6 +703,7 @@ class HybridRetriever:
                 client_id=client_id,
                 document_id=document_id,
                 fts_language=self._language_config.fts_language,
+                source_origins=source_origins,
             )
             all_keyword_results.extend(keyword_results)
 
@@ -710,6 +714,7 @@ class HybridRetriever:
                 top_k=effective_config.vector_top_k,
                 client_id=client_id,
                 document_id=document_id,
+                source_origins=source_origins,
             )
             all_vector_results.extend(hyde_results)
             logger.debug(f"{name} search returned {len(hyde_results)} results")

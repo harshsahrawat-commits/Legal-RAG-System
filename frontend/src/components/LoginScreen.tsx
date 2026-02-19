@@ -1,19 +1,44 @@
 import { useState } from 'react'
 import { Scale, ArrowRight, Loader2 } from 'lucide-react'
+import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
 import { api } from '../api'
 import { useStore } from '../store'
 
 export default function LoginScreen() {
-  const [key, setKey] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const setAuth = useStore((s) => s.setAuth)
+
+  // Legacy API key state
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [key, setKey] = useState('')
+  const [keyLoading, setKeyLoading] = useState(false)
   const setApiKey = useStore((s) => s.setApiKey)
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleGoogleSuccess = async (response: CredentialResponse) => {
+    if (!response.credential) {
+      setError('Google sign-in failed. Please try again.')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+
+    try {
+      const { data } = await api.auth.google(response.credential)
+      setAuth(data.token, data.user)
+    } catch {
+      setError('Authentication failed. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApiKeySubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!key.trim()) return
 
-    setLoading(true)
+    setKeyLoading(true)
     setError('')
 
     try {
@@ -22,7 +47,7 @@ export default function LoginScreen() {
     } catch {
       setError('Invalid API key. Please check and try again.')
     } finally {
-      setLoading(false)
+      setKeyLoading(false)
     }
   }
 
@@ -35,33 +60,59 @@ export default function LoginScreen() {
         </div>
         <p style={styles.subtitle}>AI-powered legal document analysis with precise citations</p>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <label style={styles.label}>API Key</label>
-          <input
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="lrag_xxxxxxxxxxxxxxxxxx"
-            style={styles.input}
-            autoFocus
-          />
+        {loading ? (
+          <div style={styles.loadingWrap}>
+            <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
+            <span style={{ color: 'var(--text-2)', fontSize: 14 }}>Signing in...</span>
+          </div>
+        ) : (
+          <div style={styles.googleWrap}>
+            <GoogleLogin
+              onSuccess={handleGoogleSuccess}
+              onError={() => setError('Google sign-in failed. Please try again.')}
+              theme="filled_black"
+              size="large"
+              width="320"
+              text="signin_with"
+            />
+          </div>
+        )}
 
-          {error && <p style={styles.error}>{error}</p>}
+        {error && <p style={styles.error}>{error}</p>}
 
-          <button type="submit" disabled={loading || !key.trim()} style={styles.button}>
-            {loading ? (
-              <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
-            ) : (
-              <>
-                Sign In <ArrowRight size={16} />
-              </>
-            )}
+        {/* Legacy API key option */}
+        <div style={styles.divider}>
+          <span style={styles.dividerLine} />
+          <button
+            onClick={() => setShowApiKey(!showApiKey)}
+            style={styles.dividerText}
+          >
+            {showApiKey ? 'Hide' : 'Use API key instead'}
           </button>
-        </form>
+          <span style={styles.dividerLine} />
+        </div>
 
-        <p style={styles.footer}>Multi-tenant &middot; Multilingual &middot; Cited Answers</p>
+        {showApiKey && (
+          <form onSubmit={handleApiKeySubmit} style={styles.form}>
+            <input
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="lrag_xxxxxxxxxxxxxxxxxx"
+              style={styles.input}
+            />
+            <button type="submit" disabled={keyLoading || !key.trim()} style={styles.button}>
+              {keyLoading ? (
+                <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} />
+              ) : (
+                <>Sign In <ArrowRight size={16} /></>
+              )}
+            </button>
+          </form>
+        )}
+
+        <p style={styles.footer}>Cyprus Law &middot; ECHR &middot; EU Law &middot; Cited Answers</p>
       </div>
-
     </div>
   )
 }
@@ -101,16 +152,47 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     marginBottom: 32,
   },
+  googleWrap: {
+    display: 'flex',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  loadingWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    padding: 16,
+  },
+  error: {
+    color: 'var(--danger)',
+    fontSize: 13,
+    margin: '8px 0 0',
+  },
+  divider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    margin: '20px 0',
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'var(--border)',
+  },
+  dividerText: {
+    fontSize: 12,
+    color: 'var(--text-3)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap' as const,
+  },
   form: {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 12,
     textAlign: 'left' as const,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: 500,
-    color: 'var(--text-2)',
   },
   input: {
     width: '100%',
@@ -121,17 +203,11 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-1)',
   },
-  error: {
-    color: 'var(--danger)',
-    fontSize: 13,
-    margin: 0,
-  },
   button: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    marginTop: 8,
     padding: '12px 24px',
     background: 'var(--accent)',
     color: '#000',

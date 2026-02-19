@@ -11,6 +11,12 @@ interface Props {
   isStreaming?: boolean
 }
 
+const SOURCE_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
+  cylaw: { bg: 'rgba(6,182,212,0.15)', fg: '#06b6d4', label: 'CyLaw' },
+  hudoc: { bg: 'rgba(139,92,246,0.15)', fg: '#8b5cf6', label: 'ECHR' },
+  eurlex: { bg: 'rgba(245,158,11,0.15)', fg: '#f59e0b', label: 'EU Law' },
+}
+
 function CitationBadge({
   num,
   source,
@@ -33,13 +39,16 @@ function CitationBadge({
     }
   }, [hover])
 
+  const origin = source?.source_origin || 'cylaw'
+  const colors = SOURCE_COLORS[origin] || SOURCE_COLORS.cylaw
+
   return (
     <span
       ref={ref}
       style={{
         ...badgeStyles.badge,
-        background: valid ? 'var(--accent-dim, rgba(6,182,212,0.15))' : 'var(--bg-3)',
-        color: valid ? 'var(--accent, #06b6d4)' : 'var(--text-3)',
+        background: valid ? colors.bg : 'var(--bg-3)',
+        color: valid ? colors.fg : 'var(--text-3)',
         cursor: valid ? 'pointer' : 'not-allowed',
         position: 'relative',
       }}
@@ -59,6 +68,9 @@ function CitationBadge({
             ...(tooltipPos === 'below' ? { top: '100%', bottom: 'auto', marginTop: 6 } : {}),
           }}
         >
+          <span style={{ display: 'block', fontSize: 10, fontWeight: 600, color: colors.fg, marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
+            {colors.label}
+          </span>
           <strong style={{ display: 'block', marginBottom: 4 }}>
             {source.section || source.document_title}
           </strong>

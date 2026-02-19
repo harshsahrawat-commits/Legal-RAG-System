@@ -110,30 +110,61 @@ export default function SourcePanel() {
             )}
           </div>
 
-          {/* View on CyLaw — primary document access */}
-          {source.cylaw_url ? (
-            <a
-              href={source.cylaw_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={styles.cylawBtn}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)'
-                e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.5)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(16, 185, 129, 0.15)'
-                e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.3)'
-              }}
-            >
-              <ExternalLink size={16} />
-              <span>View on CyLaw</span>
-            </a>
-          ) : (
-            <div style={styles.noCylawNotice}>
-              CyLaw link not available for this document
-            </div>
-          )}
+          {/* External link — per source type */}
+          {(() => {
+            const origin = source.source_origin || 'cylaw'
+            if (origin === 'hudoc' && source.external_url) {
+              return (
+                <a
+                  href={source.external_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ ...styles.cylawBtn, background: 'rgba(139, 92, 246, 0.15)', borderColor: 'rgba(139, 92, 246, 0.3)', color: '#8b5cf6' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.25)'; e.currentTarget.style.borderColor = 'rgba(139, 92, 246, 0.5)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.15)'; e.currentTarget.style.borderColor = 'rgba(139, 92, 246, 0.3)' }}
+                >
+                  <ExternalLink size={16} />
+                  <span>View on HUDOC</span>
+                </a>
+              )
+            }
+            if (origin === 'eurlex' && source.external_url) {
+              return (
+                <a
+                  href={source.external_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ ...styles.cylawBtn, background: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#f59e0b' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(245, 158, 11, 0.25)'; e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.5)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(245, 158, 11, 0.15)'; e.currentTarget.style.borderColor = 'rgba(245, 158, 11, 0.3)' }}
+                >
+                  <ExternalLink size={16} />
+                  <span>View on EUR-Lex</span>
+                </a>
+              )
+            }
+            // Default: CyLaw
+            if (source.cylaw_url) {
+              return (
+                <a
+                  href={source.cylaw_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={styles.cylawBtn}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.25)'; e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.5)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.15)'; e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.3)' }}
+                >
+                  <ExternalLink size={16} />
+                  <span>View on CyLaw</span>
+                </a>
+              )
+            }
+            return (
+              <div style={styles.noCylawNotice}>
+                External link not available for this document
+              </div>
+            )
+          })()}
 
           {/* Relevance bar */}
           <div style={styles.relevanceRow}>

@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Loader2, MessageSquare, Sparkles } from 'lucide-react'
+import { Send, Loader2, MessageSquare, Sparkles, Plus, SlidersHorizontal } from 'lucide-react'
 import { api } from '../api'
 import ChatMessage from './ChatMessage'
+import SourceTogglePopover from './SourceTogglePopover'
 import { useStore } from '../store'
 
 const SUGGESTED_QUESTIONS = [
-  'What are the key terms and definitions?',
-  'Summarize the main obligations of each party.',
-  'Are there any termination clauses?',
-  'What are the liability limitations?',
+  'What are the key provisions of GDPR Article 17?',
+  'Summarize ECHR case law on right to privacy.',
+  'What are the liability limitations under Cyprus law?',
+  'Explain the EU directive on consumer protection.',
 ]
 
 let _msgCounter = 0
@@ -18,12 +19,20 @@ export default function ChatInterface() {
   const messages = useStore((s) => s.messages)
   const setMessages = useStore((s) => s.setMessages)
   const selectedDocumentId = useStore((s) => s.selectedDocumentId)
+  const sourceToggles = useStore((s) => s.sourceToggles)
+  const activeConversationId = useStore((s) => s.activeConversationId)
+  const setActiveConversationId = useStore((s) => s.setActiveConversationId)
+  const conversations = useStore((s) => s.conversations)
+  const setConversations = useStore((s) => s.setConversations)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const closeSourcePanel = useStore((s) => s.closeSourcePanel)
   const sourcePanelOpen = useStore((s) => s.sourcePanelOpen)
+  const anySourceOff = !sourceToggles.cylaw || !sourceToggles.hudoc || !sourceToggles.eurlex
 
   // Auto-scroll as new tokens stream in
   const lastContentLen = useRef(0)
@@ -44,7 +53,6 @@ export default function ChatInterface() {
     setInput('')
     const assistantId = nextId()
     setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: query }])
-    // Add empty assistant message that will be progressively updated
     setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
     setLoading(true)
 
@@ -65,13 +73,20 @@ export default function ChatInterface() {
             prev.map((m) => m.id === assistantId ? { ...m, content } : m)
           )
         },
-        onDone: (latencyMs) => {
+        onDone: (latencyMs, conversationId) => {
           setMessages((prev) =>
             prev.map((m) => m.id === assistantId ? { ...m, latency_ms: latencyMs } : m)
           )
           setLoading(false)
           abortRef.current = null
           inputRef.current?.focus()
+
+          // If server created/returned a conversation_id, track it
+          if (conversationId && !activeConversationId) {
+            setActiveConversationId(conversationId)
+            // Refresh conversation list to pick up the new one
+            api.conversations.list().then(({ data }) => setConversations(data)).catch(() => {})
+          }
         },
         onError: (msg) => {
           setMessages((prev) =>
@@ -81,12 +96,20 @@ export default function ChatInterface() {
           abortRef.current = null
           inputRef.current?.focus()
         },
+        onConversationId: (id) => {
+          if (!activeConversationId) {
+            setActiveConversationId(id)
+          }
+        },
       },
       selectedDocumentId ?? undefined,
+      undefined,
+      sourceToggles,
+      activeConversationId ?? undefined,
     )
 
     abortRef.current = handle
-  }, [loading, selectedDocumentId, setMessages])
+  }, [loading, selectedDocumentId, setMessages, sourceToggles, activeConversationId, setActiveConversationId, setConversations])
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -103,12 +126,10 @@ export default function ChatInterface() {
   // Global keyboard shortcuts
   const handleGlobalKey = useCallback(
     (e: KeyboardEvent) => {
-      // Escape closes source panel
       if (e.key === 'Escape' && sourcePanelOpen) {
         closeSourcePanel()
         return
       }
-      // / focuses chat input when not already typing
       if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
         e.preventDefault()
         inputRef.current?.focus()
@@ -132,9 +153,9 @@ export default function ChatInterface() {
         {messages.length === 0 && (
           <div style={styles.empty}>
             <MessageSquare size={48} color="var(--bg-3)" />
-            <h2 style={styles.emptyTitle}>Ask about your legal documents</h2>
+            <h2 style={styles.emptyTitle}>Ask about legal documents</h2>
             <p style={styles.emptyText}>
-              Upload a document, then ask questions. Answers include precise citations you can click to view the source.
+              Search across Cyprus Law, ECHR case law, and EU legislation. Answers include precise citations you can click to view the source.
             </p>
             <div style={styles.suggestions}>
               <div style={styles.suggestionsLabel}>
@@ -165,6 +186,34 @@ export default function ChatInterface() {
       </div>
 
       <form onSubmit={handleSubmit} style={styles.inputBar}>
+        {/* Upload button */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf"
+          style={{ display: 'none' }}
+          onChange={async (e) => {
+            const file = e.target.files?.[0]
+            if (!file) return
+            try {
+              await api.documents.upload(file)
+              window.dispatchEvent(new Event('documents-changed'))
+            } catch (err) {
+              console.error('Upload failed:', err)
+            }
+            e.target.value = ''
+          }}
+        />
+        <button
+          type="button"
+          style={styles.iconBtn}
+          onClick={() => fileInputRef.current?.click()}
+          title="Upload document"
+          disabled={loading}
+        >
+          <Plus size={18} />
+        </button>
+
         <textarea
           ref={inputRef}
           value={input}
@@ -175,11 +224,29 @@ export default function ChatInterface() {
             el.style.height = Math.min(el.scrollHeight, 120) + 'px'
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Ask a question about your documents...  (press / to focus)"
+          placeholder="Ask a question about legal documents...  (press / to focus)"
           rows={1}
           style={styles.textarea}
           disabled={loading}
         />
+
+        {/* Source settings button */}
+        <div style={{ position: 'relative' as const }}>
+          <button
+            type="button"
+            style={styles.iconBtn}
+            onClick={() => setSourcePopoverOpen(!sourcePopoverOpen)}
+            title="Search sources"
+          >
+            <SlidersHorizontal size={18} />
+            {anySourceOff && <span style={styles.indicatorDot} />}
+          </button>
+          <SourceTogglePopover
+            open={sourcePopoverOpen}
+            onClose={() => setSourcePopoverOpen(false)}
+          />
+        </div>
+
         <button
           type="submit"
           disabled={loading || !input.trim()}
@@ -196,7 +263,6 @@ export default function ChatInterface() {
           {input.length}/2000
         </div>
       )}
-
     </div>
   )
 }
@@ -294,6 +360,31 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
     maxHeight: 120,
     fontFamily: 'inherit',
+  },
+  iconBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 40,
+    height: 40,
+    borderRadius: 'var(--radius-md)',
+    background: 'transparent',
+    color: 'var(--text-2)',
+    border: '1px solid var(--border)',
+    cursor: 'pointer',
+    flexShrink: 0,
+    transition: 'all var(--transition)',
+    position: 'relative' as const,
+  },
+  indicatorDot: {
+    position: 'absolute' as const,
+    top: 6,
+    right: 6,
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    background: '#f59e0b',
+    border: '1.5px solid var(--bg-1)',
   },
   sendBtn: {
     display: 'flex',

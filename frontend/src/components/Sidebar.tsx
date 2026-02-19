@@ -1,138 +1,152 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Upload, FileText, Trash2, Loader2, AlertCircle, Search, ChevronLeft, ArrowUpDown } from 'lucide-react'
+import {
+  Plus, MessageSquare, Trash2, Pencil, Check, X,
+  ChevronLeft, Settings, LogOut, Loader2, MoreHorizontal,
+} from 'lucide-react'
 import { api } from '../api'
-import type { DocumentInfo } from '../types'
+import { useStore } from '../store'
+import type { Conversation, ChatMessage } from '../types'
 
-const TYPE_COLORS: Record<string, string> = {
-  contract: '#06b6d4',
-  statute: '#8b5cf6',
-  case_law: '#f59e0b',
-  regulation: '#22c55e',
-  unknown: '#6b7280',
+function timeGroup(dateStr: string): string {
+  const d = new Date(dateStr)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const itemDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const diffDays = Math.floor((today.getTime() - itemDay.getTime()) / 86400000)
+
+  if (diffDays === 0) return 'Today'
+  if (diffDays === 1) return 'Yesterday'
+  if (diffDays <= 7) return 'Previous 7 days'
+  return 'Older'
 }
 
-type SortBy = 'name' | 'date' | 'type'
+const GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 days', 'Older']
 
 export default function Sidebar() {
-  const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [uploadStats, setUploadStats] = useState({ current: 0, total: 0, success: 0, failed: 0 })
-  const [error, setError] = useState('')
-  const [dragOver, setDragOver] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [sortBy, setSortBy] = useState<SortBy>('date')
-  const [collapsed, setCollapsed] = useState(false)
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-  const [loadingDocs, setLoadingDocs] = useState(true)
+  const conversations = useStore((s) => s.conversations)
+  const setConversations = useStore((s) => s.setConversations)
+  const activeId = useStore((s) => s.activeConversationId)
+  const setActiveId = useStore((s) => s.setActiveConversationId)
+  const setMessages = useStore((s) => s.setMessages)
+  const clearMessages = useStore((s) => s.clearMessages)
+  const user = useStore((s) => s.user)
+  const logout = useStore((s) => s.logout)
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen)
 
-  const loadDocs = useCallback(async () => {
+  const [collapsed, setCollapsed] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  const loadConversations = useCallback(async () => {
     try {
-      const { data } = await api.documents.list()
-      setDocuments(data)
+      const { data } = await api.conversations.list()
+      setConversations(data)
     } catch {
-      setError('Failed to load documents')
+      // Silently fail — might be API key user without conversation support
     } finally {
-      setLoadingDocs(false)
+      setLoading(false)
     }
-  }, [])
+  }, [setConversations])
 
   useEffect(() => {
-    loadDocs()
-  }, [loadDocs])
+    loadConversations()
+  }, [loadConversations])
 
-  const filteredAndSorted = useMemo(() => {
-    let docs = documents
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      docs = docs.filter(
-        (d) =>
-          d.title.toLowerCase().includes(q) ||
-          d.document_type.toLowerCase().includes(q)
-      )
+  const grouped = useMemo(() => {
+    const groups: Record<string, Conversation[]> = {}
+    for (const c of conversations) {
+      const g = timeGroup(c.updated_at)
+      if (!groups[g]) groups[g] = []
+      groups[g].push(c)
     }
-    return [...docs].sort((a, b) => {
-      if (sortBy === 'name') return a.title.localeCompare(b.title)
-      if (sortBy === 'type') return a.document_type.localeCompare(b.document_type)
-      // date — newest first
-      return (b.created_at ?? '').localeCompare(a.created_at ?? '')
-    })
-  }, [documents, searchQuery, sortBy])
+    return groups
+  }, [conversations])
 
-  const handleUpload = async (files: FileList | null) => {
-    if (!files?.length) return
-    const pdfFiles = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
-    if (pdfFiles.length === 0) {
-      setError('Only PDF files are supported')
-      return
-    }
+  const handleNewChat = () => {
+    setActiveId(null)
+    clearMessages()
+  }
 
-    setError('')
-    setUploading(true)
-    setUploadProgress(0)
-    setUploadStats({ current: 0, total: pdfFiles.length, success: 0, failed: 0 })
+  const handleSelectConversation = async (id: string) => {
+    if (id === activeId) return
+    setActiveId(id)
+    setMessages([])
 
-    let success = 0, failed = 0
-    for (let i = 0; i < pdfFiles.length; i++) {
-      const file = pdfFiles[i]
-      setUploadStats(prev => ({ ...prev, current: i + 1 }))
-      setUploadProgress(0)
-      try {
-        await api.documents.upload(file, setUploadProgress)
-        success++
-        setUploadStats(prev => ({ ...prev, success }))
-        loadDocs()
-      } catch (e) {
-        failed++
-        setUploadStats(prev => ({ ...prev, failed }))
-        console.error(`Failed to upload ${file.name}:`, e)
-      }
-    }
-
-    setUploading(false)
-    setUploadProgress(0)
-    if (failed > 0) {
-      setError(`${failed} of ${pdfFiles.length} uploads failed`)
+    try {
+      const { data } = await api.conversations.messages(id)
+      const msgs: ChatMessage[] = data.map((m) => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        sources: m.sources ?? undefined,
+        latency_ms: m.latency_ms ?? undefined,
+      }))
+      setMessages(msgs)
+    } catch {
+      setMessages([{
+        id: 'err',
+        role: 'assistant',
+        content: 'Failed to load conversation messages.',
+        isError: true,
+      }])
     }
   }
 
   const handleDelete = async (id: string) => {
     if (confirmDeleteId !== id) {
       setConfirmDeleteId(id)
+      setMenuOpenId(null)
       setTimeout(() => setConfirmDeleteId((cur) => (cur === id ? null : cur)), 3000)
       return
     }
     setConfirmDeleteId(null)
     try {
-      await api.documents.delete(id)
-      setDocuments((prev) => prev.filter((d) => d.id !== id))
+      await api.conversations.delete(id)
+      setConversations(conversations.filter((c) => c.id !== id))
+      if (activeId === id) {
+        setActiveId(null)
+        clearMessages()
+      }
     } catch {
-      setError('Failed to delete document')
+      // ignore
     }
   }
 
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setDragOver(false)
-    handleUpload(e.dataTransfer.files)
+  const startRename = (c: Conversation) => {
+    setRenamingId(c.id)
+    setRenameValue(c.title)
+    setMenuOpenId(null)
   }
 
-  const cycleSortBy = () => {
-    setSortBy((prev) => {
-      if (prev === 'date') return 'name'
-      if (prev === 'name') return 'type'
-      return 'date'
-    })
+  const handleRename = async () => {
+    if (!renamingId || !renameValue.trim()) {
+      setRenamingId(null)
+      return
+    }
+    try {
+      await api.conversations.rename(renamingId, renameValue.trim())
+      setConversations(
+        conversations.map((c) =>
+          c.id === renamingId ? { ...c, title: renameValue.trim() } : c
+        )
+      )
+    } catch {
+      // ignore
+    }
+    setRenamingId(null)
   }
 
   if (collapsed) {
     return (
       <aside style={styles.collapsedSidebar}>
         <button onClick={() => setCollapsed(false)} style={styles.expandBtn} title="Expand sidebar">
-          <FileText size={18} />
+          <MessageSquare size={18} />
         </button>
-        {documents.length > 0 && (
-          <span style={styles.collapsedCount}>{documents.length}</span>
+        {conversations.length > 0 && (
+          <span style={styles.collapsedCount}>{conversations.length}</span>
         )}
       </aside>
     )
@@ -140,124 +154,135 @@ export default function Sidebar() {
 
   return (
     <aside style={styles.sidebar}>
-      <div style={styles.section}>
-        <div style={styles.sectionHeader}>
-          <h3 style={styles.sectionTitle}>Upload Document</h3>
-          <button onClick={() => setCollapsed(true)} style={styles.collapseBtn} title="Collapse sidebar">
-            <ChevronLeft size={16} />
-          </button>
-        </div>
-        <div
-          style={{ ...styles.dropZone, ...(dragOver ? styles.dropZoneActive : {}) }}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={onDrop}
-          onClick={() => document.getElementById('file-input')?.click()}
-        >
-          {uploading ? (
-            <>
-              <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
-              <span style={styles.dropText}>
-                Uploading {uploadStats.current}/{uploadStats.total}
-              </span>
-              <span style={styles.progressText}>
-                {uploadStats.success > 0 && `${uploadStats.success} done`}
-                {uploadStats.failed > 0 && ` / ${uploadStats.failed} failed`}
-              </span>
-              {uploadProgress > 0 && uploadProgress < 100 && (
-                <span style={styles.progressText}>{uploadProgress}% uploading...</span>
-              )}
-            </>
-          ) : (
-            <>
-              <Upload size={24} color="var(--text-3)" />
-              <span style={styles.dropText}>Drop PDF here or click</span>
-            </>
-          )}
-          <input
-            id="file-input"
-            type="file"
-            accept=".pdf"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => { handleUpload(e.target.files); e.target.value = '' }}
-          />
-        </div>
-        {error && (
-          <div style={styles.errorRow}>
-            <AlertCircle size={14} />
-            <span>{error}</span>
+      {/* New Chat + Collapse */}
+      <div style={styles.topBar}>
+        <button onClick={handleNewChat} style={styles.newChatBtn}>
+          <Plus size={16} />
+          <span>New Chat</span>
+        </button>
+        <button onClick={() => setCollapsed(true)} style={styles.collapseBtn} title="Collapse sidebar">
+          <ChevronLeft size={16} />
+        </button>
+      </div>
+
+      {/* Conversation list */}
+      <div style={styles.convList}>
+        {loading && <p style={styles.emptyText}>Loading...</p>}
+        {!loading && conversations.length === 0 && (
+          <p style={styles.emptyText}>No conversations yet</p>
+        )}
+
+        {GROUP_ORDER.map((group) => {
+          const items = grouped[group]
+          if (!items?.length) return null
+          return (
+            <div key={group}>
+              <div style={styles.groupLabel}>{group}</div>
+              {items.map((c) => (
+                <div
+                  key={c.id}
+                  style={{
+                    ...styles.convItem,
+                    ...(c.id === activeId ? styles.convItemActive : {}),
+                    ...(confirmDeleteId === c.id ? styles.convItemDanger : {}),
+                  }}
+                  onClick={() => {
+                    if (renamingId !== c.id) handleSelectConversation(c.id)
+                  }}
+                >
+                  {renamingId === c.id ? (
+                    <div style={styles.renameRow}>
+                      <input
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRename()
+                          if (e.key === 'Escape') setRenamingId(null)
+                        }}
+                        style={styles.renameInput}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <button onClick={(e) => { e.stopPropagation(); handleRename() }} style={styles.tinyBtn}>
+                        <Check size={14} />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); setRenamingId(null) }} style={styles.tinyBtn}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <span style={styles.convTitle} title={c.title}>{c.title}</span>
+                      {confirmDeleteId === c.id ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDelete(c.id) }}
+                          style={styles.confirmDeleteBtn}
+                        >
+                          Confirm?
+                        </button>
+                      ) : (
+                        <div style={{ position: 'relative' as const }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setMenuOpenId(menuOpenId === c.id ? null : c.id)
+                            }}
+                            style={styles.moreBtn}
+                          >
+                            <MoreHorizontal size={14} />
+                          </button>
+                          {menuOpenId === c.id && (
+                            <div style={styles.contextMenu}>
+                              <button
+                                style={styles.menuItem}
+                                onClick={(e) => { e.stopPropagation(); startRename(c) }}
+                              >
+                                <Pencil size={13} /> Rename
+                              </button>
+                              <button
+                                style={{ ...styles.menuItem, color: 'var(--danger)' }}
+                                onClick={(e) => { e.stopPropagation(); handleDelete(c.id) }}
+                              >
+                                <Trash2 size={13} /> Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* User footer */}
+      <div style={styles.footer}>
+        {user && (
+          <div style={styles.userRow}>
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" style={styles.avatar} />
+            ) : (
+              <div style={styles.avatarPlaceholder}>
+                {(user.name || user.email || '?')[0].toUpperCase()}
+              </div>
+            )}
+            <span style={styles.userName} title={user.email}>
+              {user.name || user.email}
+            </span>
           </div>
         )}
-      </div>
-
-      <div style={{ ...styles.section, flex: 1, overflow: 'hidden' }}>
-        <div style={styles.sectionHeader}>
-          <h3 style={styles.sectionTitle}>
-            Documents
-            <span style={styles.countBadge}>{documents.length}</span>
-          </h3>
-          <button onClick={cycleSortBy} style={styles.sortBtn} title={`Sort by ${sortBy}`}>
-            <ArrowUpDown size={13} />
-            <span>{sortBy}</span>
+        <div style={styles.footerActions}>
+          <button onClick={() => setSettingsOpen(true)} style={styles.footerBtn} title="Settings">
+            <Settings size={16} />
+          </button>
+          <button onClick={logout} style={styles.footerBtn} title="Sign out">
+            <LogOut size={16} />
           </button>
         </div>
-
-        {/* Search */}
-        <div style={styles.searchWrap}>
-          <Search size={14} color="var(--text-3)" style={{ flexShrink: 0 }} />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter documents..."
-            style={styles.searchInput}
-          />
-        </div>
-
-        <div style={styles.docList}>
-          {loadingDocs && (
-            <p style={styles.emptyText}>Loading documents...</p>
-          )}
-          {!loadingDocs && filteredAndSorted.length === 0 && documents.length === 0 && (
-            <p style={styles.emptyText}>No documents uploaded yet</p>
-          )}
-          {filteredAndSorted.length === 0 && documents.length > 0 && (
-            <p style={styles.emptyText}>No documents match "{searchQuery}"</p>
-          )}
-          {filteredAndSorted.map((doc) => (
-            <div key={doc.id} style={styles.docCard}>
-              <div style={styles.docHeader}>
-                <FileText size={16} color="var(--text-2)" style={{ flexShrink: 0 }} />
-                <span style={styles.docTitle} title={doc.title}>{doc.title}</span>
-                <button
-                  onClick={() => handleDelete(doc.id)}
-                  style={{
-                    ...styles.deleteBtn,
-                    ...(confirmDeleteId === doc.id ? { color: 'var(--danger)', fontWeight: 600, fontSize: 11 } : {}),
-                  }}
-                  title={confirmDeleteId === doc.id ? 'Click again to confirm' : 'Delete'}
-                >
-                  {confirmDeleteId === doc.id ? 'Confirm?' : <Trash2 size={14} />}
-                </button>
-              </div>
-              <div style={styles.docMeta}>
-                <span
-                  style={{
-                    ...styles.badge,
-                    color: TYPE_COLORS[doc.document_type] || TYPE_COLORS.unknown,
-                    borderColor: TYPE_COLORS[doc.document_type] || TYPE_COLORS.unknown,
-                  }}
-                >
-                  {doc.document_type}
-                </span>
-                <span style={styles.metaText}>{doc.page_count} pages</span>
-              </div>
-            </div>
-          ))}
-        </div>
       </div>
-
     </aside>
   )
 }
@@ -271,7 +296,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     flexShrink: 0,
     overflow: 'hidden',
-    transition: 'width 0.2s ease',
   },
   collapsedSidebar: {
     width: 48,
@@ -283,7 +307,6 @@ const styles: Record<string, React.CSSProperties> = {
     paddingTop: 12,
     gap: 8,
     flexShrink: 0,
-    transition: 'width 0.2s ease',
   },
   expandBtn: {
     display: 'flex',
@@ -291,7 +314,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     width: 32,
     height: 32,
-    borderRadius: 'var(--radius-sm, 4px)',
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--text-2)',
     background: 'none',
     border: 'none',
@@ -302,169 +325,219 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: 'var(--text-3)',
   },
-  section: {
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-  },
-  sectionHeader: {
+  topBar: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 8,
+    padding: '12px 12px 8px',
   },
-  sectionTitle: {
-    fontSize: 12,
+  newChatBtn: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '10px 14px',
+    fontSize: 13,
     fontWeight: 600,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    color: 'var(--text-3)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    margin: 0,
-  },
-  countBadge: {
-    fontSize: 10,
-    fontWeight: 700,
-    background: 'var(--accent-dim, rgba(6,182,212,0.15))',
-    color: 'var(--accent, #06b6d4)',
-    padding: '1px 6px',
-    borderRadius: 10,
+    color: 'var(--text-1)',
+    background: 'var(--bg-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    cursor: 'pointer',
+    transition: 'all var(--transition)',
   },
   collapseBtn: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 24,
-    height: 24,
-    borderRadius: 'var(--radius-sm, 4px)',
+    width: 32,
+    height: 32,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--text-3)',
     background: 'none',
     border: 'none',
     cursor: 'pointer',
   },
-  sortBtn: {
+  convList: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '4px 8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  },
+  groupLabel: {
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+    color: 'var(--text-3)',
+    padding: '12px 8px 4px',
+  },
+  convItem: {
     display: 'flex',
     alignItems: 'center',
     gap: 4,
-    padding: '2px 6px',
-    fontSize: 10,
-    fontWeight: 500,
+    padding: '8px 10px',
+    borderRadius: 'var(--radius-sm)',
+    cursor: 'pointer',
+    transition: 'background 0.1s',
+  },
+  convItemActive: {
+    background: 'var(--bg-2)',
+  },
+  convItemDanger: {
+    background: 'rgba(239,68,68,0.08)',
+  },
+  convTitle: {
+    flex: 1,
+    fontSize: 13,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: 'var(--text-1)',
+  },
+  moreBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 24,
+    height: 24,
+    borderRadius: 'var(--radius-sm)',
     color: 'var(--text-3)',
     background: 'none',
-    border: '1px solid var(--border)',
-    borderRadius: 'var(--radius-sm, 4px)',
+    border: 'none',
     cursor: 'pointer',
-    textTransform: 'capitalize' as const,
+    opacity: 0.6,
+    flexShrink: 0,
   },
-  searchWrap: {
+  contextMenu: {
+    position: 'absolute',
+    top: '100%',
+    right: 0,
+    zIndex: 50,
+    minWidth: 140,
+    background: 'var(--bg-1)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    boxShadow: 'var(--shadow-lg)',
+    padding: 4,
+  },
+  menuItem: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    padding: '6px 10px',
-    background: 'var(--bg-2)',
-    borderRadius: 'var(--radius-sm, 4px)',
-    border: '1px solid var(--border)',
-  },
-  searchInput: {
-    flex: 1,
-    border: 'none',
-    background: 'none',
+    width: '100%',
+    padding: '8px 12px',
+    fontSize: 13,
     color: 'var(--text-1)',
-    fontSize: 12,
+    background: 'none',
+    border: 'none',
+    borderRadius: 'var(--radius-sm)',
+    cursor: 'pointer',
+    textAlign: 'left',
+  },
+  confirmDeleteBtn: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--danger)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    flexShrink: 0,
+    padding: '2px 6px',
+  },
+  renameRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flex: 1,
+  },
+  renameInput: {
+    flex: 1,
+    padding: '4px 8px',
+    fontSize: 13,
+    background: 'var(--bg-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-1)',
     outline: 'none',
     fontFamily: 'inherit',
   },
-  dropZone: {
+  tinyBtn: {
     display: 'flex',
-    flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    padding: 20,
-    border: '2px dashed var(--border)',
-    borderRadius: 'var(--radius-md)',
+    width: 24,
+    height: 24,
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-2)',
+    background: 'none',
+    border: 'none',
     cursor: 'pointer',
-    transition: 'all var(--transition)',
   },
-  dropZoneActive: {
-    borderColor: 'var(--accent)',
-    background: 'var(--accent-dim)',
-  },
-  dropText: {
-    fontSize: 13,
-    color: 'var(--text-3)',
-  },
-  progressText: {
-    fontSize: 11,
-    color: 'var(--text-3)',
-  },
-  errorRow: {
+  footer: {
+    padding: '12px',
+    borderTop: '1px solid var(--border)',
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
-    color: 'var(--danger)',
-    fontSize: 12,
-  },
-  docList: {
-    flex: 1,
-    overflowY: 'auto' as const,
-    display: 'flex',
-    flexDirection: 'column' as const,
+    justifyContent: 'space-between',
     gap: 8,
+  },
+  userRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    minWidth: 0,
+  },
+  avatar: {
+    width: 28,
+    height: 28,
+    borderRadius: '50%',
+    flexShrink: 0,
+  },
+  avatarPlaceholder: {
+    width: 28,
+    height: 28,
+    borderRadius: '50%',
+    background: 'var(--accent-dim, rgba(6,182,212,0.15))',
+    color: 'var(--accent)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 13,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  userName: {
+    fontSize: 13,
+    color: 'var(--text-2)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  footerActions: {
+    display: 'flex',
+    gap: 2,
+    flexShrink: 0,
+  },
+  footerBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 32,
+    height: 32,
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-3)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
   },
   emptyText: {
     color: 'var(--text-3)',
     fontSize: 13,
-    textAlign: 'center' as const,
-    padding: 20,
-  },
-  docCard: {
-    padding: 12,
-    background: 'var(--bg-2)',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border)',
-  },
-  docHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  docTitle: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: 500,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  },
-  deleteBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 28,
-    height: 28,
-    borderRadius: 'var(--radius-sm)',
-    color: 'var(--text-3)',
-    flexShrink: 0,
-    transition: 'color var(--transition)',
-  },
-  docMeta: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-  },
-  badge: {
-    fontSize: 11,
-    fontWeight: 500,
-    padding: '2px 8px',
-    borderRadius: 20,
-    border: '1px solid',
-  },
-  metaText: {
-    fontSize: 12,
-    color: 'var(--text-3)',
+    textAlign: 'center',
+    padding: 24,
   },
 }

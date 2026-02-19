@@ -617,6 +617,7 @@ class VectorStore:
             context_before TEXT,
             context_after TEXT,
             metadata JSONB DEFAULT '{{}}',
+            source_origin VARCHAR(20) DEFAULT 'cylaw',
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
@@ -650,6 +651,12 @@ class VectorStore:
         CREATE INDEX IF NOT EXISTS idx_chunks_para_array
             ON {self.config.table_name}
             USING GIN (original_paragraph_numbers);
+
+        -- Source origin indexes for multi-source filtering
+        CREATE INDEX IF NOT EXISTS idx_chunks_source_origin
+            ON {self.config.table_name}(source_origin);
+        CREATE INDEX IF NOT EXISTS idx_chunks_client_source
+            ON {self.config.table_name}(client_id, source_origin);
 
         -- Vector similarity index (IVFFlat for scalability)
         -- Note: Only create after inserting some data for better index quality
@@ -843,6 +850,7 @@ class VectorStore:
         chunks: list[dict],
         embeddings: list[list[float]],
         client_id: Optional[str] = None,
+        source_origin: str = "cylaw",
     ) -> None:
         """
         Batch insert chunks with embeddings using execute_values for 50x faster ingestion.
@@ -851,6 +859,7 @@ class VectorStore:
             chunks: List of chunk dictionaries (from Chunk.to_dict())
             embeddings: Corresponding embedding vectors
             client_id: Optional client ID for multi-tenant isolation
+            source_origin: Source origin label ("cylaw", "hudoc", or "eurlex")
         """
         conn = self._ensure_connection()
 
@@ -867,7 +876,7 @@ class VectorStore:
             (id, document_id, client_id, content, section_title, hierarchy_path,
              level, page_numbers, paragraph_start, paragraph_end, original_paragraph_numbers,
              contextualized, context_prefix, parent_chunk_id, token_count, embedding,
-             legal_references, context_before, context_after, metadata)
+             legal_references, context_before, context_after, metadata, source_origin)
         VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             content = EXCLUDED.content,
@@ -876,7 +885,8 @@ class VectorStore:
             paragraph_end = EXCLUDED.paragraph_end,
             original_paragraph_numbers = EXCLUDED.original_paragraph_numbers,
             contextualized = EXCLUDED.contextualized,
-            context_prefix = EXCLUDED.context_prefix
+            context_prefix = EXCLUDED.context_prefix,
+            source_origin = EXCLUDED.source_origin
         """
 
         # Prepare all values as a list of tuples
@@ -903,6 +913,7 @@ class VectorStore:
                 chunk.get("context_before", ""),
                 chunk.get("context_after", ""),
                 json.dumps(chunk.get("metadata", {})),
+                source_origin,
             ))
 
         try:
@@ -912,17 +923,140 @@ class VectorStore:
                     cur,
                     sql,
                     values,
-                    template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s)",
+                    template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s, %s)",
                     page_size=1000,
                 )
                 conn.commit()
-            logger.info(f"Batch inserted {len(chunks)} chunks")
+            logger.info(f"Batch inserted {len(chunks)} chunks (source_origin={source_origin})")
         except Exception as e:
             conn.rollback()
             logger.error(f"Chunk insert failed: {e}")
             raise
         finally:
             self._release_connection(conn)
+
+    def insert_chunks_with_conn(
+        self,
+        conn,
+        chunks: list[dict],
+        embeddings: list[list[float]],
+        client_id: Optional[str] = None,
+        source_origin: str = "cylaw",
+    ) -> None:
+        """
+        Insert chunks using an existing connection (no commit/rollback).
+
+        This variant is used for atomic document+chunks inserts where the
+        caller manages the transaction. The caller is responsible for
+        calling conn.commit() or conn.rollback().
+
+        Args:
+            conn: An existing psycopg2 connection (caller manages transaction)
+            chunks: List of chunk dictionaries (from Chunk.to_dict())
+            embeddings: Corresponding embedding vectors
+            client_id: Optional client ID for multi-tenant isolation
+            source_origin: Source origin label ("cylaw", "hudoc", or "eurlex")
+        """
+        if len(chunks) != len(embeddings):
+            raise ValueError(
+                f"Mismatch: {len(chunks)} chunks, {len(embeddings)} embeddings"
+            )
+
+        from psycopg2.extras import execute_values
+
+        sql = f"""
+        INSERT INTO {self.config.table_name}
+            (id, document_id, client_id, content, section_title, hierarchy_path,
+             level, page_numbers, paragraph_start, paragraph_end, original_paragraph_numbers,
+             contextualized, context_prefix, parent_chunk_id, token_count, embedding,
+             legal_references, context_before, context_after, metadata, source_origin)
+        VALUES %s
+        ON CONFLICT (id) DO UPDATE SET
+            content = EXCLUDED.content,
+            embedding = EXCLUDED.embedding,
+            paragraph_start = EXCLUDED.paragraph_start,
+            paragraph_end = EXCLUDED.paragraph_end,
+            original_paragraph_numbers = EXCLUDED.original_paragraph_numbers,
+            contextualized = EXCLUDED.contextualized,
+            context_prefix = EXCLUDED.context_prefix,
+            source_origin = EXCLUDED.source_origin
+        """
+
+        values = []
+        for chunk, embedding in zip(chunks, embeddings):
+            values.append((
+                chunk["chunk_id"],
+                chunk["document_id"],
+                client_id,
+                chunk["content"],
+                chunk["section_title"],
+                chunk["hierarchy_path"],
+                chunk["level"],
+                chunk.get("page_numbers", []),
+                chunk.get("paragraph_start"),
+                chunk.get("paragraph_end"),
+                chunk.get("original_paragraph_numbers", []),
+                chunk.get("contextualized", False),
+                chunk.get("context_prefix", ""),
+                chunk.get("parent_chunk_id"),
+                chunk["token_count"],
+                embedding,
+                chunk.get("legal_references", []),
+                chunk.get("context_before", ""),
+                chunk.get("context_after", ""),
+                json.dumps(chunk.get("metadata", {})),
+                source_origin,
+            ))
+
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                sql,
+                values,
+                template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s, %s)",
+                page_size=1000,
+            )
+        logger.info(f"Inserted {len(chunks)} chunks via provided connection (source_origin={source_origin})")
+
+    def insert_document_with_conn(
+        self,
+        conn,
+        document_id: str,
+        title: str,
+        document_type: str,
+        client_id: Optional[str] = None,
+        jurisdiction: Optional[str] = None,
+        file_path: Optional[str] = None,
+        page_count: int = 0,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Insert a document record using an existing connection (no commit/rollback).
+
+        Caller manages the transaction.
+        """
+        sql = """
+        INSERT INTO legal_documents
+            (id, client_id, title, document_type, jurisdiction, file_path, page_count, metadata)
+        VALUES
+            (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            document_type = EXCLUDED.document_type,
+            jurisdiction = EXCLUDED.jurisdiction,
+            metadata = EXCLUDED.metadata
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (
+                document_id,
+                client_id,
+                title,
+                document_type,
+                jurisdiction,
+                file_path,
+                page_count,
+                json.dumps(metadata or {}),
+            ))
 
     def search(
         self,
@@ -931,6 +1065,7 @@ class VectorStore:
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
         min_score: float = 0.0,
+        source_origins: Optional[list[str]] = None,
     ) -> list[SearchResult]:
         """
         Semantic search using vector similarity.
@@ -941,6 +1076,7 @@ class VectorStore:
             client_id: Optional filter by client
             document_id: Optional filter by document
             min_score: Minimum similarity score (0-1)
+            source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc"])
 
         Returns:
             List of SearchResult objects
@@ -958,6 +1094,11 @@ class VectorStore:
         if document_id:
             filters.append("document_id = %s::uuid")
             filter_params.append(document_id)
+
+        if source_origins:
+            placeholders = ",".join(["%s"] * len(source_origins))
+            filters.append(f"source_origin IN ({placeholders})")
+            filter_params.extend(source_origins)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
 
@@ -1041,6 +1182,7 @@ class VectorStore:
         client_id: Optional[str] = None,
         document_id: Optional[str] = None,
         fts_language: str = "english",
+        source_origins: Optional[list[str]] = None,
     ) -> list[SearchResult]:
         """
         Full-text keyword search using PostgreSQL ts_rank.
@@ -1051,6 +1193,7 @@ class VectorStore:
             client_id: Optional filter by client
             document_id: Optional filter by document
             fts_language: PostgreSQL FTS config name ("english" or "greek")
+            source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc"])
 
         Returns:
             List of SearchResult objects
@@ -1072,6 +1215,11 @@ class VectorStore:
         if document_id:
             where_extra += " AND document_id = %s::uuid"
             filter_params.append(document_id)
+
+        if source_origins:
+            placeholders = ",".join(["%s"] * len(source_origins))
+            where_extra += f" AND source_origin IN ({placeholders})"
+            filter_params.extend(source_origins)
 
         kw_columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
@@ -1279,6 +1427,47 @@ class VectorStore:
         except Exception as e:
             conn.rollback()
             logger.error(f"Migration failed: {e}")
+            return False
+        finally:
+            self._release_connection(conn)
+
+    def migrate_add_source_origin(self) -> bool:
+        """
+        Migration: Add source_origin column to document_chunks for multi-source filtering.
+
+        Enables filtering by data source (cylaw, hudoc, eurlex) at the chunk level.
+        Backfills all existing rows as 'cylaw' since all prior data is CyLaw.
+        Safe to run multiple times (uses IF NOT EXISTS).
+
+        Returns:
+            True if migration succeeded, False otherwise
+        """
+        conn = self._ensure_connection()
+
+        migration_sql = f"""
+        ALTER TABLE {self.config.table_name}
+        ADD COLUMN IF NOT EXISTS source_origin VARCHAR(20) DEFAULT 'cylaw';
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_source_origin
+            ON {self.config.table_name}(source_origin);
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_client_source
+            ON {self.config.table_name}(client_id, source_origin);
+
+        UPDATE {self.config.table_name}
+        SET source_origin = 'cylaw'
+        WHERE source_origin IS NULL;
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(migration_sql)
+                conn.commit()
+            logger.info("Migration completed: Added source_origin column with indexes")
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"source_origin migration failed: {e}")
             return False
         finally:
             self._release_connection(conn)
@@ -1602,6 +1791,429 @@ class VectorStore:
         finally:
             self._release_connection(conn)
 
+    # =========================================================================
+    # User Auth & Conversation Schema (Google OAuth)
+    # =========================================================================
+
+    def migrate_add_user_auth_schema(self) -> bool:
+        """
+        Migration: Create users, conversations, messages tables and add
+        user_id/upload_scope/conversation_id columns to legal_documents.
+
+        Safe to run multiple times (uses IF NOT EXISTS / IF NOT EXISTS).
+
+        Returns:
+            True if migration succeeded, False otherwise
+        """
+        conn = self._ensure_connection()
+
+        migration_sql = """
+        -- Users table (Google OAuth)
+        CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            google_sub VARCHAR(255) UNIQUE NOT NULL,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            name VARCHAR(255),
+            avatar_url TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_login TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Conversations (chat sessions)
+        CREATE TABLE IF NOT EXISTS conversations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title VARCHAR(500) DEFAULT 'New Chat',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversations_user
+            ON conversations(user_id, updated_at DESC);
+
+        -- Messages within conversations
+        CREATE TABLE IF NOT EXISTS messages (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL,
+            sources JSONB,
+            latency_ms FLOAT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation
+            ON messages(conversation_id, created_at);
+
+        -- Add user_id, upload_scope, conversation_id to legal_documents
+        ALTER TABLE legal_documents ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id);
+        ALTER TABLE legal_documents ADD COLUMN IF NOT EXISTS upload_scope VARCHAR(20) DEFAULT 'persistent';
+        ALTER TABLE legal_documents ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id);
+
+        CREATE INDEX IF NOT EXISTS idx_legal_docs_user
+            ON legal_documents(user_id);
+        CREATE INDEX IF NOT EXISTS idx_legal_docs_conversation
+            ON legal_documents(conversation_id);
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(migration_sql)
+                conn.commit()
+            logger.info("Migration completed: User auth & conversation schema created")
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"User auth schema migration failed: {e}")
+            return False
+        finally:
+            self._release_connection(conn)
+
+    # =========================================================================
+    # User CRUD
+    # =========================================================================
+
+    def create_or_get_user(
+        self,
+        google_sub: str,
+        email: str,
+        name: Optional[str] = None,
+        avatar_url: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a new user or get existing one by google_sub.
+        Updates last_login, name, and avatar_url on each login.
+
+        Returns:
+            Dict with id, google_sub, email, name, avatar_url
+        """
+        conn = self._ensure_connection()
+
+        sql = """
+        INSERT INTO users (google_sub, email, name, avatar_url)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (google_sub) DO UPDATE SET
+            email = EXCLUDED.email,
+            name = EXCLUDED.name,
+            avatar_url = EXCLUDED.avatar_url,
+            last_login = NOW()
+        RETURNING id, google_sub, email, name, avatar_url
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (google_sub, email, name, avatar_url))
+                row = cur.fetchone()
+                conn.commit()
+
+            if isinstance(row, dict):
+                return {
+                    "id": str(row["id"]),
+                    "google_sub": row["google_sub"],
+                    "email": row["email"],
+                    "name": row["name"],
+                    "avatar_url": row["avatar_url"],
+                }
+            return {
+                "id": str(row[0]),
+                "google_sub": row[1],
+                "email": row[2],
+                "name": row[3],
+                "avatar_url": row[4],
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"create_or_get_user failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        """Get user by ID. Returns None if not found."""
+        conn = self._ensure_connection()
+
+        sql = "SELECT id, google_sub, email, name, avatar_url FROM users WHERE id = %s::uuid"
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                row = cur.fetchone()
+
+            if not row:
+                return None
+
+            if isinstance(row, dict):
+                return {
+                    "id": str(row["id"]),
+                    "google_sub": row["google_sub"],
+                    "email": row["email"],
+                    "name": row["name"],
+                    "avatar_url": row["avatar_url"],
+                }
+            return {
+                "id": str(row[0]),
+                "google_sub": row[1],
+                "email": row[2],
+                "name": row[3],
+                "avatar_url": row[4],
+            }
+        except Exception as e:
+            logger.error(f"get_user_by_id failed: {e}")
+            return None
+        finally:
+            self._release_connection(conn)
+
+    # =========================================================================
+    # Conversation CRUD
+    # =========================================================================
+
+    def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
+        """Create a new conversation for a user."""
+        conn = self._ensure_connection()
+
+        sql = """
+        INSERT INTO conversations (user_id, title)
+        VALUES (%s::uuid, %s)
+        RETURNING id, user_id, title, created_at, updated_at
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id, title))
+                row = cur.fetchone()
+                conn.commit()
+
+            if isinstance(row, dict):
+                return {
+                    "id": str(row["id"]),
+                    "user_id": str(row["user_id"]),
+                    "title": row["title"],
+                    "created_at": row["created_at"].isoformat(),
+                    "updated_at": row["updated_at"].isoformat(),
+                }
+            return {
+                "id": str(row[0]),
+                "user_id": str(row[1]),
+                "title": row[2],
+                "created_at": row[3].isoformat(),
+                "updated_at": row[4].isoformat(),
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"create_conversation failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def list_conversations(self, user_id: str) -> list[dict]:
+        """List all conversations for a user, newest first."""
+        conn = self._ensure_connection()
+
+        sql = """
+        SELECT id, user_id, title, created_at, updated_at
+        FROM conversations
+        WHERE user_id = %s::uuid
+        ORDER BY updated_at DESC
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                rows = cur.fetchall()
+
+            result = []
+            for row in rows:
+                if isinstance(row, dict):
+                    result.append({
+                        "id": str(row["id"]),
+                        "user_id": str(row["user_id"]),
+                        "title": row["title"],
+                        "created_at": row["created_at"].isoformat(),
+                        "updated_at": row["updated_at"].isoformat(),
+                    })
+                else:
+                    result.append({
+                        "id": str(row[0]),
+                        "user_id": str(row[1]),
+                        "title": row[2],
+                        "created_at": row[3].isoformat(),
+                        "updated_at": row[4].isoformat(),
+                    })
+            return result
+        except Exception as e:
+            logger.error(f"list_conversations failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
+        """Delete a conversation and all its messages (user-isolated).
+
+        Also deletes any chat-scoped documents tied to this conversation.
+        """
+        conn = self._ensure_connection()
+
+        try:
+            with conn.cursor() as cur:
+                # Delete chat-scoped documents first
+                cur.execute(
+                    "DELETE FROM legal_documents WHERE conversation_id = %s::uuid AND user_id = %s::uuid",
+                    (conversation_id, user_id),
+                )
+                # Delete the conversation (cascades to messages)
+                cur.execute(
+                    "DELETE FROM conversations WHERE id = %s::uuid AND user_id = %s::uuid",
+                    (conversation_id, user_id),
+                )
+                deleted = cur.rowcount > 0
+                conn.commit()
+            return deleted
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"delete_conversation failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def rename_conversation(self, conversation_id: str, user_id: str, title: str) -> bool:
+        """Rename a conversation (user-isolated)."""
+        conn = self._ensure_connection()
+
+        sql = """
+        UPDATE conversations SET title = %s, updated_at = NOW()
+        WHERE id = %s::uuid AND user_id = %s::uuid
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (title, conversation_id, user_id))
+                updated = cur.rowcount > 0
+                conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"rename_conversation failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def touch_conversation(self, conversation_id: str) -> None:
+        """Update the updated_at timestamp of a conversation."""
+        conn = self._ensure_connection()
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE conversations SET updated_at = NOW() WHERE id = %s::uuid",
+                    (conversation_id,),
+                )
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"touch_conversation failed: {e}")
+        finally:
+            self._release_connection(conn)
+
+    # =========================================================================
+    # Message CRUD
+    # =========================================================================
+
+    def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        sources: Optional[list] = None,
+        latency_ms: Optional[float] = None,
+    ) -> dict:
+        """Add a message to a conversation."""
+        conn = self._ensure_connection()
+
+        sql = """
+        INSERT INTO messages (conversation_id, role, content, sources, latency_ms)
+        VALUES (%s::uuid, %s, %s, %s, %s)
+        RETURNING id, conversation_id, role, content, sources, latency_ms, created_at
+        """
+
+        import json as _json
+        sources_json = _json.dumps(sources) if sources else None
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (conversation_id, role, content, sources_json, latency_ms))
+                row = cur.fetchone()
+                conn.commit()
+
+            if isinstance(row, dict):
+                return {
+                    "id": str(row["id"]),
+                    "conversation_id": str(row["conversation_id"]),
+                    "role": row["role"],
+                    "content": row["content"],
+                    "sources": row["sources"],
+                    "latency_ms": row["latency_ms"],
+                    "created_at": row["created_at"].isoformat(),
+                }
+            return {
+                "id": str(row[0]),
+                "conversation_id": str(row[1]),
+                "role": row[2],
+                "content": row[3],
+                "sources": row[4],
+                "latency_ms": row[5],
+                "created_at": row[6].isoformat(),
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"add_message failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def get_messages(self, conversation_id: str, user_id: str) -> list[dict]:
+        """Get all messages for a conversation (verified by user_id)."""
+        conn = self._ensure_connection()
+
+        sql = """
+        SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.latency_ms, m.created_at
+        FROM messages m
+        JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.conversation_id = %s::uuid AND c.user_id = %s::uuid
+        ORDER BY m.created_at ASC
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (conversation_id, user_id))
+                rows = cur.fetchall()
+
+            result = []
+            for row in rows:
+                if isinstance(row, dict):
+                    result.append({
+                        "id": str(row["id"]),
+                        "conversation_id": str(row["conversation_id"]),
+                        "role": row["role"],
+                        "content": row["content"],
+                        "sources": row["sources"],
+                        "latency_ms": row["latency_ms"],
+                        "created_at": row["created_at"].isoformat(),
+                    })
+                else:
+                    result.append({
+                        "id": str(row[0]),
+                        "conversation_id": str(row[1]),
+                        "role": row[2],
+                        "content": row[3],
+                        "sources": row[4],
+                        "latency_ms": row[5],
+                        "created_at": row[6].isoformat(),
+                    })
+            return result
+        except Exception as e:
+            logger.error(f"get_messages failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
     def create_greek_fts_index(self) -> None:
         """Create Greek FTS index on-demand (when first Greek tenant is created)."""
         conn = self._ensure_connection()
@@ -1680,9 +2292,19 @@ if __name__ == "__main__":
 
             print("\nRLS test complete. Documents are isolated by client_id.")
 
+        elif command == "migrate-source-origin":
+            # Add source_origin column for multi-source filtering
+            ok = store.migrate_add_source_origin()
+            print("source_origin migration " + ("succeeded" if ok else "FAILED"))
+
+        elif command == "migrate-user-auth":
+            # Add users, conversations, messages tables
+            ok = store.migrate_add_user_auth_schema()
+            print("user auth migration " + ("succeeded" if ok else "FAILED"))
+
         else:
             print(f"Unknown command: {command}")
-            print("Available commands: setup-auth, enable-rls, create-demo-key, test-rls")
+            print("Available commands: setup-auth, enable-rls, create-demo-key, test-rls, migrate-source-origin, migrate-user-auth")
     else:
         import re as _re
         print("Vector store initialized successfully")

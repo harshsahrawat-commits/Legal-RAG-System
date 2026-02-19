@@ -7,6 +7,11 @@ import type {
   TenantConfig,
   TenantConfigUpdate,
   HealthResponse,
+  SourceToggles,
+  AuthResponse,
+  UserInfo,
+  Conversation,
+  MessageRecord,
 } from './types'
 
 const client = axios.create({
@@ -15,8 +20,10 @@ const client = axios.create({
 })
 
 client.interceptors.request.use((config) => {
-  const apiKey = useStore.getState().apiKey
-  if (apiKey) {
+  const { jwt, apiKey } = useStore.getState()
+  if (jwt) {
+    config.headers['Authorization'] = `Bearer ${jwt}`
+  } else if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
   return config
@@ -32,14 +39,34 @@ client.interceptors.response.use(
   }
 )
 
+/**
+ * Get the auth header for fetch-based requests (SSE streaming).
+ */
+function getAuthHeaders(): Record<string, string> {
+  const { jwt, apiKey } = useStore.getState()
+  if (jwt) return { 'Authorization': `Bearer ${jwt}` }
+  if (apiKey) return { 'X-API-Key': apiKey }
+  return {}
+}
+
 export const api = {
   health: () => client.get<HealthResponse>('/api/v1/health'),
 
+  // Legacy API key validation
   validateKey: (key: string) =>
     client.get<DocumentInfo[]>('/api/v1/documents', {
       headers: { 'X-API-Key': key },
     }),
 
+  // Auth
+  auth: {
+    google: (idToken: string) =>
+      client.post<AuthResponse>('/api/v1/auth/google', { id_token: idToken }),
+    me: () =>
+      client.get<UserInfo>('/api/v1/auth/me'),
+  },
+
+  // Documents
   documents: {
     list: () => client.get<DocumentInfo[]>('/api/v1/documents'),
     upload: (file: File, onProgress?: (pct: number) => void) => {
@@ -47,7 +74,7 @@ export const api = {
       form.append('file', file)
       return client.post<UploadResponse>('/api/v1/documents/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 600000, // 10 minutes per file for large PDFs
+        timeout: 600000,
         onUploadProgress: (e) => {
           if (onProgress && e.total) onProgress(Math.round((e.loaded * 100) / e.total))
         },
@@ -56,11 +83,24 @@ export const api = {
     delete: (id: string) => client.delete(`/api/v1/documents/${id}`),
   },
 
-  query: (query: string, documentId?: string, topK?: number) =>
+  // Conversations
+  conversations: {
+    list: () => client.get<Conversation[]>('/api/v1/conversations'),
+    create: (title?: string) =>
+      client.post<Conversation>('/api/v1/conversations', { title: title || 'New Chat' }),
+    delete: (id: string) => client.delete(`/api/v1/conversations/${id}`),
+    rename: (id: string, title: string) =>
+      client.put(`/api/v1/conversations/${id}/title`, { title }),
+    messages: (id: string) =>
+      client.get<MessageRecord[]>(`/api/v1/conversations/${id}/messages`),
+  },
+
+  query: (query: string, documentId?: string, topK?: number, sourceToggles?: SourceToggles) =>
     client.post<QueryResponse>('/api/v1/query', {
       query,
       document_id: documentId || null,
       top_k: topK || 10,
+      ...(sourceToggles ? { sources: sourceToggles } : {}),
     }),
 
   /**
@@ -73,26 +113,30 @@ export const api = {
     callbacks: {
       onSources: (sources: import('./types').SourceInfo[]) => void
       onToken: (token: string) => void
-      onDone: (latencyMs: number) => void
+      onDone: (latencyMs: number, conversationId?: string) => void
       onError: (msg: string) => void
+      onConversationId?: (id: string) => void
     },
     documentId?: string,
     topK?: number,
+    sourceToggles?: SourceToggles,
+    conversationId?: string,
   ): { abort: () => void } => {
     const controller = new AbortController()
     const baseURL = import.meta.env.VITE_API_URL || ''
-    const apiKey = useStore.getState().apiKey
 
     fetch(`${baseURL}/api/v1/query/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+        ...getAuthHeaders(),
       },
       body: JSON.stringify({
         query,
         document_id: documentId || null,
         top_k: topK || 10,
+        conversation_id: conversationId || null,
+        ...(sourceToggles ? { sources: sourceToggles } : {}),
       }),
       signal: controller.signal,
     })
@@ -117,7 +161,6 @@ export const api = {
 
         const decoder = new TextDecoder()
         let buffer = ''
-        // Persist across chunks so split event:/data: lines aren't lost
         let currentEvent = ''
         let currentData = ''
 
@@ -127,9 +170,8 @@ export const api = {
 
           buffer += decoder.decode(value, { stream: true })
 
-          // Parse SSE events from buffer
           const lines = buffer.split('\n')
-          buffer = lines.pop() || '' // Keep incomplete line in buffer
+          buffer = lines.pop() || ''
 
           for (const line of lines) {
             if (line.startsWith('event: ')) {
@@ -137,7 +179,6 @@ export const api = {
             } else if (line.startsWith('data: ')) {
               currentData = line.slice(6)
             } else if (line === '' && currentEvent && currentData) {
-              // End of event
               try {
                 const parsed = JSON.parse(currentData)
                 if (currentEvent === 'sources') {
@@ -145,9 +186,11 @@ export const api = {
                 } else if (currentEvent === 'token') {
                   callbacks.onToken(parsed)
                 } else if (currentEvent === 'done') {
-                  callbacks.onDone(parsed.latency_ms)
+                  callbacks.onDone(parsed.latency_ms, parsed.conversation_id)
                 } else if (currentEvent === 'error') {
                   callbacks.onError(parsed)
+                } else if (currentEvent === 'conversation_id') {
+                  callbacks.onConversationId?.(parsed)
                 }
               } catch {
                 // Ignore parse errors from partial data

@@ -1,22 +1,21 @@
-import { useState } from 'react'
 import Header from './Header'
 import Sidebar from './Sidebar'
 import ChatInterface from './ChatInterface'
 import SourcePanel from './SourcePanel'
-import ConfigModal from './ConfigModal'
+import SettingsPage from './SettingsPage'
+import { useStore } from '../store'
 
 export default function MainLayout() {
-  const [configOpen, setConfigOpen] = useState(false)
+  const settingsOpen = useStore((s) => s.settingsOpen)
 
   return (
     <div style={styles.layout}>
       <Sidebar />
       <div style={styles.main}>
-        <Header onSettingsClick={() => setConfigOpen(true)} />
-        <ChatInterface />
+        <Header />
+        {settingsOpen ? <SettingsPage /> : <ChatInterface />}
       </div>
-      <SourcePanel />
-      <ConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
+      {!settingsOpen && <SourcePanel />}
     </div>
   )
 }

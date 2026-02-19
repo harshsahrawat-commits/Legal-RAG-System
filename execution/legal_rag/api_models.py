@@ -7,11 +7,19 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class SourceToggles(BaseModel):
+    """Controls which legal databases to include in a query."""
+    cylaw: bool = True
+    hudoc: bool = True
+    eurlex: bool = True
+
+
 class QueryRequest(BaseModel):
     """Request body for RAG query endpoint."""
     query: str = Field(..., min_length=1, max_length=2000)
     document_id: Optional[str] = None
     top_k: int = Field(default=10, ge=1, le=50)
+    sources: SourceToggles = SourceToggles()
 
 
 class SourceInfo(BaseModel):
@@ -29,6 +37,8 @@ class SourceInfo(BaseModel):
     context_before: Optional[str] = ""
     context_after: Optional[str] = ""
     cylaw_url: Optional[str] = None
+    source_origin: str = "cylaw"
+    external_url: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -84,3 +94,67 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     database: str
+
+
+# =========================================================================
+# Auth models
+# =========================================================================
+
+class GoogleAuthRequest(BaseModel):
+    """Request body for Google OAuth token exchange."""
+    id_token: str
+
+
+class AuthResponse(BaseModel):
+    """Response body for auth endpoints."""
+    token: str
+    user: "UserInfo"
+
+
+class UserInfo(BaseModel):
+    """User profile information."""
+    id: str
+    email: str
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+# =========================================================================
+# Conversation models
+# =========================================================================
+
+class ConversationCreate(BaseModel):
+    """Request body for creating a conversation."""
+    title: str = "New Chat"
+
+
+class ConversationResponse(BaseModel):
+    """Response body for a conversation."""
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ConversationRename(BaseModel):
+    """Request body for renaming a conversation."""
+    title: str = Field(..., min_length=1, max_length=500)
+
+
+class MessageResponse(BaseModel):
+    """A single message in a conversation."""
+    id: str
+    role: str
+    content: str
+    sources: Optional[list] = None
+    latency_ms: Optional[float] = None
+    created_at: str
+
+
+class StreamQueryRequest(BaseModel):
+    """Request body for streaming query with conversation support."""
+    query: str = Field(..., min_length=1, max_length=2000)
+    conversation_id: Optional[str] = None
+    document_id: Optional[str] = None
+    top_k: int = Field(default=10, ge=1, le=50)
+    sources: SourceToggles = SourceToggles()

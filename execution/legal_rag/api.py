@@ -17,7 +17,6 @@ import tempfile
 from typing import Optional
 from pathlib import Path
 from collections import defaultdict
-
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,9 +27,13 @@ from .api_models import (
     DocumentInfo, UploadResponse,
     TenantConfigUpdate, TenantConfigResponse,
     HealthResponse,
+    GoogleAuthRequest, AuthResponse, UserInfo,
+    ConversationCreate, ConversationResponse, ConversationRename,
+    MessageResponse, StreamQueryRequest,
 )
 from .language_config import TenantLanguageConfig
 from .language_patterns import LLM_PROMPTS
+from .auth import verify_google_token, create_session_jwt, verify_session_jwt
 
 # Load environment variables
 load_dotenv()
@@ -75,6 +78,9 @@ def generate_cylaw_url(stem: str) -> str | None:
     # CAP-style (e.g. CAP154, CAP029A)
     if clean.upper().startswith("CAP"):
         return f"https://www.cylaw.org/nomoi/arith/{clean.upper()}.pdf"
+    # Special documents (Constitution, etc.)
+    if clean.lower() == "syntagma":
+        return "https://www.cylaw.org/nomoi/arith/syntagma.pdf"
     return None
 
 
@@ -112,6 +118,9 @@ def _stem_from_title(title: str | None) -> str | None:
     m = re.search(r"(?:Κεφ\.|Cap\.|CAP)\s*(\d+[A-Z]?)", title, re.IGNORECASE)
     if m:
         return f"CAP{m.group(1)}"
+    # Constitution: "ΣΥΝΤΑΓΜΑ" or "Σύνταγμα"
+    if "ΣΥΝΤΑΓΜΑ" in title.upper() or "SYNTAGMA" in title.upper():
+        return "syntagma"
     return None
 
 app = FastAPI(
@@ -192,6 +201,7 @@ class ServiceContainer:
             try:
                 self._store.initialize_auth_schema()
                 self._store.initialize_tenant_config_schema()
+                self._store.migrate_add_user_auth_schema()
             except Exception as e:
                 logger.warning(f"Schema init partial: {e}")
         return self._store
@@ -243,16 +253,52 @@ _container = ServiceContainer()
 
 
 # =============================================================================
-# Authentication dependency
+# Authentication dependencies
 # =============================================================================
 
-async def get_authenticated_client(x_api_key: str = Header(...)) -> dict:
-    """Validate API key and return client info."""
-    store = _container.get_store()
-    result = store.validate_api_key(x_api_key)
-    if not result:
+async def get_authenticated_user(request: Request) -> dict:
+    """Authenticate via JWT Bearer token (primary) or API key (legacy).
+
+    Returns dict with:
+      - user_id: str (UUID of the users table row) — for JWT auth
+      - client_id: str (UUID) — for API key auth (legacy)
+      - email, name: from JWT payload
+      - auth_method: "jwt" | "api_key"
+    """
+    # 1) Try JWT Bearer token
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        user_info = verify_session_jwt(token)
+        if user_info:
+            return {
+                "user_id": user_info["user_id"],
+                "client_id": user_info["user_id"],  # alias for backward compat
+                "email": user_info["email"],
+                "name": user_info["name"],
+                "tier": "default",
+                "auth_method": "jwt",
+            }
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # 2) Fall back to API key
+    api_key = request.headers.get("x-api-key", "")
+    if api_key:
+        store = _container.get_store()
+        result = store.validate_api_key(api_key)
+        if result:
+            result["auth_method"] = "api_key"
+            result["user_id"] = result["client_id"]  # alias
+            return result
         raise HTTPException(status_code=401, detail="Invalid API key")
-    return result
+
+    raise HTTPException(status_code=401, detail="Missing authentication")
+
+
+# Backward-compatible alias
+async def get_authenticated_client(request: Request) -> dict:
+    """Alias for get_authenticated_user for backward compatibility."""
+    return await get_authenticated_user(request)
 
 
 async def get_tenant_config(
@@ -283,6 +329,111 @@ def _invalidate_client_cache(client_id: str, lang_config: TenantLanguageConfig =
                 retriever._result_cache.invalidate_for_client(client_id)
     except Exception as e:
         logger.warning(f"Cache invalidation failed for client {client_id}: {e}")
+
+
+# =============================================================================
+# Multi-Source Retrieval Helpers
+# =============================================================================
+
+def _source_toggle_key(sources) -> str:
+    """Build a string key from source toggles for cache differentiation."""
+    return f"cylaw={int(sources.cylaw)},hudoc={int(sources.hudoc)},eurlex={int(sources.eurlex)}"
+
+
+# Origin label mapping for LLM context
+_ORIGIN_LABELS = {
+    "cylaw": "CyLaw",
+    "hudoc": "ECHR",
+    "eurlex": "EU Law",
+}
+
+
+def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
+                      query_embedding, services, store, source_origins):
+    """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex).
+
+    All sources are stored in the same pgvector DB with a `source_origin` column.
+    This replaces the old 3-way parallel retrieval (DB + HUDOC API + EUR-Lex SPARQL).
+
+    Returns (cited_contents, all_sources) where cited_contents is the list used
+    for building LLM context, and all_sources is the list of SourceInfo objects.
+    """
+    try:
+        results = retriever.retrieve(
+            query=query,
+            client_id=client_id,
+            document_id=document_id,
+            top_k=top_k,
+            query_embedding=query_embedding,
+            source_origins=source_origins,
+        )
+        results = [r for r in results if r.hierarchy_path != "Document"]
+        if not results:
+            return [], []
+
+        # Fetch document metadata for all unique doc IDs
+        doc_ids = list(set(r.document_id for r in results))
+        doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
+        doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
+
+        # Build citations
+        cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
+
+        # Build SourceInfo per result, determining origin from document metadata
+        sources_list = []
+        for cc in cited_contents:
+            did = cc.citation.document_id
+            meta = doc_source_meta.get(did, {})
+            doc_metadata = meta.get("metadata") or {}
+            origin = doc_metadata.get("source_origin", "cylaw")
+
+            # Determine URLs based on origin
+            if origin == "cylaw":
+                stem = (doc_metadata.get("source_stem")
+                        or _stem_from_file_path(meta.get("file_path"))
+                        or _stem_from_title(meta.get("title")))
+                cylaw_url = generate_cylaw_url(stem)
+                external_url = None
+            else:
+                # HUDOC and EUR-Lex have external_url stored in metadata.source_url
+                cylaw_url = None
+                external_url = doc_metadata.get("source_url")
+
+            sources_list.append(SourceInfo(
+                document_title=cc.citation.document_title,
+                section=cc.citation.section,
+                page_numbers=cc.citation.page_numbers,
+                hierarchy_path=cc.citation.hierarchy_path,
+                chunk_id=cc.citation.chunk_id,
+                document_id=cc.citation.document_id,
+                relevance_score=cc.citation.relevance_score,
+                short_citation=cc.citation.short_format(),
+                long_citation=cc.citation.long_format(),
+                content=cc.content,
+                context_before=cc.context_before or "",
+                context_after=cc.context_after or "",
+                cylaw_url=cylaw_url,
+                source_origin=origin,
+                external_url=external_url,
+            ))
+
+        return cited_contents, sources_list
+    except Exception as e:
+        logger.warning(f"DB retrieval failed: {e}")
+        return [], []
+
+
+def _build_context_string(cited_contents, sources_list):
+    """Build LLM context string with origin labels from cited contents + sources.
+
+    Returns the context string for the LLM prompt.
+    """
+    context_parts = []
+    for idx, (cc, src) in enumerate(zip(cited_contents, sources_list), 1):
+        label = _ORIGIN_LABELS.get(src.source_origin, src.source_origin)
+        context_parts.append(f"**[{idx}]** ({label}) {cc.citation.short_format()}:\n{cc.content}")
+
+    return "\n\n---\n\n".join(context_parts)
 
 
 # =============================================================================
@@ -450,11 +601,20 @@ async def query_documents(
     client: dict = Depends(get_authenticated_client),
     lang_config: TenantLanguageConfig = Depends(get_tenant_config),
 ):
-    """RAG query with citations."""
+    """RAG query with citations. Supports multi-source toggles (CyLaw, HUDOC, EUR-Lex)."""
     start_time = time.time()
     client_id = client["client_id"]
     services = _container.get_services(lang_config)
     store = _container.get_store()
+    sources_cfg = request.sources
+
+    # Check that at least one source is enabled
+    if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex:
+        return QueryResponse(
+            answer="No sources are enabled. Please enable at least one source to search.",
+            sources=[],
+            latency_ms=(time.time() - start_time) * 1000,
+        )
 
     # Quota enforcement
     try:
@@ -470,14 +630,16 @@ async def query_documents(
     store.log_audit(
         client_id=client_id,
         action="query",
-        details={"query": request.query[:200]},
+        details={"query": request.query[:200], "sources": _source_toggle_key(sources_cfg)},
     )
 
-    # Check full-pipeline cache first (answer + sources)
+    # Check full-pipeline cache (key includes toggle state)
     retriever = services["retriever"]
     original_embedding = retriever.embeddings.embed_query(request.query)
+    toggle_key = _source_toggle_key(sources_cfg)
+    cache_doc_id = f"{request.document_id or ''}|{toggle_key}"
     cache_hit = retriever._result_cache.get(
-        request.query, client_id, request.document_id,
+        request.query, client_id, cache_doc_id,
         query_embedding=original_embedding,
     )
     if cache_hit is not None:
@@ -491,53 +653,34 @@ async def query_documents(
                 latency_ms=elapsed,
             )
 
-    # Retrieve (cache miss or no answer cached)
-    # Pass pre-computed embedding to avoid redundant Voyage API call inside retriever
-    results = retriever.retrieve(
-        query=request.query,
-        client_id=client_id,
-        document_id=request.document_id,
-        top_k=request.top_k,
-        query_embedding=original_embedding,
+    # Unified DB retrieval with source_origins filter
+    source_origins = []
+    if sources_cfg.cylaw:
+        source_origins.append("cylaw")
+    if sources_cfg.hudoc:
+        source_origins.append("hudoc")
+    if sources_cfg.eurlex:
+        source_origins.append("eurlex")
+
+    cited_contents, all_sources = _retrieve_from_db(
+        request.query, retriever, client_id, request.document_id,
+        request.top_k, original_embedding, services, store, source_origins,
     )
 
-    # Filter out summary chunks
-    results = [r for r in results if r.hierarchy_path != "Document"]
-
-    if not results:
+    if not all_sources:
         return QueryResponse(
-            answer="No relevant information found in the uploaded documents.",
+            answer="No relevant information found in the enabled sources.",
             sources=[],
             latency_ms=(time.time() - start_time) * 1000,
         )
 
-    # Look up document titles + metadata for citation accuracy & CyLaw URLs
-    doc_ids = list(set(r.document_id for r in results))
-    doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
-    doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
-
-    # Pre-compute CyLaw URLs per document
-    doc_cylaw_urls: dict[str, str | None] = {}
-    for did, meta in doc_source_meta.items():
-        stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path")) or _stem_from_title(meta.get("title"))
-        doc_cylaw_urls[did] = generate_cylaw_url(stem)
-
-    # Citations
-    cited_contents = services["citation_extractor"].extract(
-        results, document_titles=doc_titles
-    )
-
-    # Build context
-    context = "\n\n---\n\n".join([
-        f"**[{i+1}]** {cc.citation.short_format()}:\n{cc.content}"
-        for i, cc in enumerate(cited_contents)
-    ])
+    # Build LLM context
+    context = _build_context_string(cited_contents, all_sources)
 
     # Generate answer
     lang = lang_config.language
     try:
         llm_client = _container.get_llm_client()
-
         system_prompt = LLM_PROMPTS.get(lang, LLM_PROMPTS["en"])["rag_system"]
 
         response = llm_client.chat.completions.create(
@@ -560,61 +703,45 @@ async def query_documents(
             logger.error(f"LLM generation failed ({lang}): {type(e).__name__}: {e}")
             answer = "I found relevant information but couldn't generate a summary. See sources below."
 
-    # Format sources
-    sources = []
-    for cc in cited_contents:
-        sources.append(SourceInfo(
-            document_title=cc.citation.document_title,
-            section=cc.citation.section,
-            page_numbers=cc.citation.page_numbers,
-            hierarchy_path=cc.citation.hierarchy_path,
-            chunk_id=cc.citation.chunk_id,
-            document_id=cc.citation.document_id,
-            relevance_score=cc.citation.relevance_score,
-            short_citation=cc.citation.short_format(),
-            long_citation=cc.citation.long_format(),
-            content=cc.content,
-            context_before=cc.context_before or "",
-            context_after=cc.context_after or "",
-            cylaw_url=doc_cylaw_urls.get(cc.citation.document_id),
-        ))
-
-    # Cache the full pipeline result (answer + sources) for future identical queries
+    # Cache the full pipeline result
     answer_data = {
         "answer": answer,
-        "sources": [s.model_dump() for s in sources],
+        "sources": [s.model_dump() for s in all_sources],
     }
     retriever._result_cache.set(
-        request.query, results, client_id, request.document_id,
+        request.query, [], client_id, cache_doc_id,
         query_embedding=original_embedding,
         answer_data=answer_data,
     )
 
     return QueryResponse(
         answer=answer,
-        sources=sources,
+        sources=all_sources,
         latency_ms=(time.time() - start_time) * 1000,
     )
 
 
 @app.post("/api/v1/query/stream", dependencies=[Depends(check_rate_limit)])
 async def query_documents_stream(
-    request: QueryRequest,
+    request: StreamQueryRequest,
     client: dict = Depends(get_authenticated_client),
     lang_config: TenantLanguageConfig = Depends(get_tenant_config),
 ):
-    """Streaming RAG query with SSE.
+    """Streaming RAG query with SSE. Supports multi-source toggles and conversation persistence.
 
     Sends events:
       - {"event": "sources", "data": [...]}  (after retrieval)
       - {"event": "token", "data": "..."}    (during generation)
-      - {"event": "done", "data": {"latency_ms": ...}}  (final)
+      - {"event": "done", "data": {"latency_ms": ..., "conversation_id": ...}}  (final)
       - {"event": "error", "data": "..."}    (on failure)
     """
     start_time = time.time()
     client_id = client["client_id"]
+    user_id = client.get("user_id", client_id)
     services = _container.get_services(lang_config)
     store = _container.get_store()
+    sources_cfg = request.sources
+    conversation_id = request.conversation_id
 
     # Quota enforcement
     try:
@@ -627,18 +754,75 @@ async def query_documents_stream(
         logger.warning(f"Quota check failed (allowing request): {e}")
 
     # Audit
-    store.log_audit(client_id=client_id, action="query", details={"query": request.query[:200]})
+    store.log_audit(client_id=client_id, action="query", details={"query": request.query[:200], "sources": _source_toggle_key(sources_cfg)})
 
     def _sse_event(event: str, data) -> str:
         """Format a Server-Sent Event."""
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+    def _save_messages(conv_id, query_text, answer_text, sources_data, latency):
+        """Save user + assistant messages to DB (best-effort)."""
+        if not conv_id:
+            return
+        try:
+            store.add_message(conv_id, "user", query_text)
+            store.add_message(
+                conv_id, "assistant", answer_text,
+                sources=sources_data,
+                latency_ms=latency,
+            )
+            store.touch_conversation(conv_id)
+        except Exception as exc:
+            logger.warning(f"Failed to save messages to conversation {conv_id}: {exc}")
+
+    def _auto_title(conv_id, query_text):
+        """Auto-generate conversation title from first user query (best-effort)."""
+        if not conv_id:
+            return
+        try:
+            msgs = store.get_messages(conv_id, user_id)
+            # Only auto-title if this is the first exchange (0 existing messages before we saved)
+            user_msgs = [m for m in msgs if m["role"] == "user"]
+            if len(user_msgs) <= 1:
+                title = query_text[:80].strip()
+                if len(query_text) > 80:
+                    title += "..."
+                store.rename_conversation(conv_id, user_id, title)
+        except Exception as exc:
+            logger.warning(f"Auto-title failed for conversation {conv_id}: {exc}")
+
     def generate():
-        # Check full-pipeline cache first
+        nonlocal conversation_id
+
+        # Auto-create conversation if JWT user sends without conversation_id
+        if not conversation_id and client.get("auth_method") == "jwt":
+            try:
+                c = store.create_conversation(user_id, title="New Chat")
+                conversation_id = c["id"]
+            except Exception as exc:
+                logger.warning(f"Auto-create conversation failed: {exc}")
+
+        # Send conversation_id to frontend so it can track it
+        if conversation_id:
+            yield _sse_event("conversation_id", conversation_id)
+
+        # Check no-sources-enabled edge case
+        if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex:
+            no_src_msg = "No sources are enabled. Please enable at least one source to search."
+            yield _sse_event("token", no_src_msg)
+            yield _sse_event("sources", [])
+            elapsed = (time.time() - start_time) * 1000
+            _save_messages(conversation_id, request.query, no_src_msg, [], elapsed)
+            yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
+            return
+
+        # Check full-pipeline cache (key includes toggle state)
         retriever = services["retriever"]
         original_embedding = retriever.embeddings.embed_query(request.query)
+        toggle_key = _source_toggle_key(sources_cfg)
+        cache_doc_id = f"{request.document_id or ''}|{toggle_key}"
         cache_hit = retriever._result_cache.get(
-            request.query, client_id, request.document_id,
+            request.query, client_id, cache_doc_id,
             query_embedding=original_embedding,
         )
         if cache_hit is not None:
@@ -648,61 +832,40 @@ async def query_documents_stream(
                 logger.info(f"Stream: full-pipeline cache hit in {elapsed:.0f}ms")
                 yield _sse_event("sources", answer_data["sources"])
                 yield _sse_event("token", answer_data["answer"])
-                yield _sse_event("done", {"latency_ms": elapsed})
+                _save_messages(conversation_id, request.query, answer_data["answer"], answer_data["sources"], elapsed)
+                _auto_title(conversation_id, request.query)
+                yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
                 return
 
-        # Retrieve — pass pre-computed embedding to avoid redundant Voyage API call
-        results = retriever.retrieve(
-            query=request.query,
-            client_id=client_id,
-            document_id=request.document_id,
-            top_k=request.top_k,
-            query_embedding=original_embedding,
-        )
-        results = [r for r in results if r.hierarchy_path != "Document"]
+        # Unified DB retrieval with source_origins filter
+        source_origins = []
+        if sources_cfg.cylaw:
+            source_origins.append("cylaw")
+        if sources_cfg.hudoc:
+            source_origins.append("hudoc")
+        if sources_cfg.eurlex:
+            source_origins.append("eurlex")
 
-        if not results:
-            yield _sse_event("token", "No relevant information found in the uploaded documents.")
+        cited_contents, all_sources = _retrieve_from_db(
+            request.query, retriever, client_id, request.document_id,
+            request.top_k, original_embedding, services, store, source_origins,
+        )
+
+        if not all_sources:
+            no_result_msg = "No relevant information found in the enabled sources."
+            yield _sse_event("token", no_result_msg)
             yield _sse_event("sources", [])
-            yield _sse_event("done", {"latency_ms": (time.time() - start_time) * 1000})
+            elapsed = (time.time() - start_time) * 1000
+            _save_messages(conversation_id, request.query, no_result_msg, [], elapsed)
+            yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
             return
 
-        # Build citations + sources
-        doc_ids = list(set(r.document_id for r in results))
-        doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
-        doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
-        doc_cylaw_urls: dict[str, str | None] = {}
-        for did, meta in doc_source_meta.items():
-            stem = (meta.get("metadata") or {}).get("source_stem") or _stem_from_file_path(meta.get("file_path")) or _stem_from_title(meta.get("title"))
-            doc_cylaw_urls[did] = generate_cylaw_url(stem)
-        cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
-
-        sources_list = []
-        for cc in cited_contents:
-            sources_list.append(SourceInfo(
-                document_title=cc.citation.document_title,
-                section=cc.citation.section,
-                page_numbers=cc.citation.page_numbers,
-                hierarchy_path=cc.citation.hierarchy_path,
-                chunk_id=cc.citation.chunk_id,
-                document_id=cc.citation.document_id,
-                relevance_score=cc.citation.relevance_score,
-                short_citation=cc.citation.short_format(),
-                long_citation=cc.citation.long_format(),
-                content=cc.content,
-                context_before=cc.context_before or "",
-                context_after=cc.context_after or "",
-                cylaw_url=doc_cylaw_urls.get(cc.citation.document_id),
-            ))
-
         # Send sources immediately so frontend can show them while answer streams
-        yield _sse_event("sources", [s.model_dump() for s in sources_list])
+        sources_serialized = [s.model_dump() for s in all_sources]
+        yield _sse_event("sources", sources_serialized)
 
-        # Build context for LLM
-        context = "\n\n---\n\n".join([
-            f"**[{i+1}]** {cc.citation.short_format()}:\n{cc.content}"
-            for i, cc in enumerate(cited_contents)
-        ])
+        # Build LLM context
+        context = _build_context_string(cited_contents, all_sources)
 
         # Stream answer generation
         lang = lang_config.language
@@ -742,15 +905,20 @@ async def query_documents_stream(
         # Cache the full pipeline result
         answer_data = {
             "answer": full_answer,
-            "sources": [s.model_dump() for s in sources_list],
+            "sources": sources_serialized,
         }
         retriever._result_cache.set(
-            request.query, results, client_id, request.document_id,
+            request.query, [], client_id, cache_doc_id,
             query_embedding=original_embedding,
             answer_data=answer_data,
         )
 
-        yield _sse_event("done", {"latency_ms": (time.time() - start_time) * 1000})
+        # Save messages to DB
+        elapsed = (time.time() - start_time) * 1000
+        _save_messages(conversation_id, request.query, full_answer, sources_serialized, elapsed)
+        _auto_title(conversation_id, request.query)
+
+        yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
 
     return StreamingResponse(
         generate(),
@@ -829,3 +997,142 @@ async def update_config(
         reranker_model=current.reranker_model,
         fts_language=current.fts_language,
     )
+
+
+# =============================================================================
+# Auth Endpoints
+# =============================================================================
+
+@app.post("/api/v1/auth/google", response_model=AuthResponse)
+async def google_auth(request: GoogleAuthRequest):
+    """Exchange a Google ID token for a session JWT."""
+    user_info = verify_google_token(request.id_token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    store = _container.get_store()
+    user = store.create_or_get_user(
+        google_sub=user_info["google_sub"],
+        email=user_info["email"],
+        name=user_info["name"],
+        avatar_url=user_info["avatar_url"],
+    )
+
+    token = create_session_jwt(user["id"], user["email"], user["name"])
+
+    return AuthResponse(
+        token=token,
+        user=UserInfo(
+            id=user["id"],
+            email=user["email"],
+            name=user["name"],
+            avatar_url=user["avatar_url"],
+        ),
+    )
+
+
+@app.get("/api/v1/auth/me", response_model=UserInfo)
+async def get_me(client: dict = Depends(get_authenticated_user)):
+    """Get current authenticated user info."""
+    if client.get("auth_method") == "jwt":
+        store = _container.get_store()
+        user = store.get_user_by_id(client["user_id"])
+        if user:
+            return UserInfo(
+                id=user["id"],
+                email=user["email"],
+                name=user["name"],
+                avatar_url=user["avatar_url"],
+            )
+    # Fallback for API key users
+    return UserInfo(
+        id=client.get("user_id", client.get("client_id", "")),
+        email=client.get("email", ""),
+        name=client.get("name", ""),
+    )
+
+
+# =============================================================================
+# Conversation Endpoints
+# =============================================================================
+
+@app.get("/api/v1/conversations", response_model=list[ConversationResponse])
+async def list_conversations_endpoint(
+    client: dict = Depends(get_authenticated_user),
+):
+    """List all conversations for the authenticated user (newest first)."""
+    store = _container.get_store()
+    convos = store.list_conversations(client["user_id"])
+    return [
+        ConversationResponse(
+            id=c["id"],
+            title=c["title"],
+            created_at=c["created_at"],
+            updated_at=c["updated_at"],
+        )
+        for c in convos
+    ]
+
+
+@app.post("/api/v1/conversations", response_model=ConversationResponse)
+async def create_conversation_endpoint(
+    body: ConversationCreate,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Create a new conversation."""
+    store = _container.get_store()
+    c = store.create_conversation(client["user_id"], title=body.title)
+    return ConversationResponse(
+        id=c["id"],
+        title=c["title"],
+        created_at=c["created_at"],
+        updated_at=c["updated_at"],
+    )
+
+
+@app.delete("/api/v1/conversations/{conversation_id}")
+async def delete_conversation_endpoint(
+    conversation_id: str,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Delete a conversation and all its messages."""
+    store = _container.get_store()
+    deleted = store.delete_conversation(conversation_id, client["user_id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "deleted", "conversation_id": conversation_id}
+
+
+@app.put("/api/v1/conversations/{conversation_id}/title")
+async def rename_conversation_endpoint(
+    conversation_id: str,
+    body: ConversationRename,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Rename a conversation."""
+    store = _container.get_store()
+    updated = store.rename_conversation(conversation_id, client["user_id"], body.title)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "updated", "title": body.title}
+
+
+@app.get("/api/v1/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
+async def get_messages_endpoint(
+    conversation_id: str,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Get all messages for a conversation."""
+    store = _container.get_store()
+    msgs = store.get_messages(conversation_id, client["user_id"])
+    return [
+        MessageResponse(
+            id=m["id"],
+            role=m["role"],
+            content=m["content"],
+            sources=m["sources"],
+            latency_ms=m["latency_ms"],
+            created_at=m["created_at"],
+        )
+        for m in msgs
+    ]

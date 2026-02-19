@@ -1,3 +1,9 @@
+export interface SourceToggles {
+  cylaw: boolean
+  hudoc: boolean
+  eurlex: boolean
+}
+
 export interface SourceInfo {
   document_title: string
   section: string
@@ -12,6 +18,8 @@ export interface SourceInfo {
   context_before: string
   context_after: string
   cylaw_url?: string | null
+  source_origin?: 'cylaw' | 'hudoc' | 'eurlex'
+  external_url?: string | null
 }
 
 export interface QueryResponse {
@@ -70,6 +78,36 @@ export interface ChatMessage {
   sources?: SourceInfo[]
   latency_ms?: number
   isError?: boolean
+}
+
+// Auth types
+export interface UserInfo {
+  id: string
+  email: string
+  name?: string | null
+  avatar_url?: string | null
+}
+
+export interface AuthResponse {
+  token: string
+  user: UserInfo
+}
+
+// Conversation types
+export interface Conversation {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface MessageRecord {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  sources?: SourceInfo[] | null
+  latency_ms?: number | null
+  created_at: string
 }
 
 export interface ParsedPart {
