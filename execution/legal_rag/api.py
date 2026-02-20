@@ -878,146 +878,145 @@ async def query_documents_stream(
     def generate():
         nonlocal conversation_id
 
+        logger.info(f"Stream: generator started for query: {request.query[:80]}")
+
         try:
-            yield from _generate_inner()
-        except Exception as e:
-            logger.error(f"Stream generator crashed: {type(e).__name__}: {e}", exc_info=True)
-            yield _sse_event("error", f"Server error: {type(e).__name__}: {e}")
+            # Auto-create conversation if JWT user sends without conversation_id
+            if not conversation_id and client.get("auth_method") == "jwt":
+                try:
+                    c = store.create_conversation(user_id, title="New Chat")
+                    conversation_id = c["id"]
+                except Exception as exc:
+                    logger.warning(f"Auto-create conversation failed: {exc}")
 
-    def _generate_inner():
-        nonlocal conversation_id
+            # Send conversation_id to frontend so it can track it
+            if conversation_id:
+                yield _sse_event("conversation_id", conversation_id)
 
-        # Auto-create conversation if JWT user sends without conversation_id
-        if not conversation_id and client.get("auth_method") == "jwt":
-            try:
-                c = store.create_conversation(user_id, title="New Chat")
-                conversation_id = c["id"]
-            except Exception as exc:
-                logger.warning(f"Auto-create conversation failed: {exc}")
-
-        # Send conversation_id to frontend so it can track it
-        if conversation_id:
-            yield _sse_event("conversation_id", conversation_id)
-
-        # Check no-sources-enabled edge case
-        if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex and not sources_cfg.families:
-            no_src_msg = "No sources are enabled. Please enable at least one source to search."
-            yield _sse_event("token", no_src_msg)
-            yield _sse_event("sources", [])
-            elapsed = (time.time() - start_time) * 1000
-            _save_messages(conversation_id, request.query, no_src_msg, [], elapsed)
-            yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
-            return
-
-        # Check full-pipeline cache (key includes toggle state)
-        retriever = services["retriever"]
-        original_embedding = retriever.embeddings.embed_query(request.query)
-        toggle_key = _source_toggle_key(sources_cfg)
-        cache_doc_id = f"{request.document_id or ''}|{toggle_key}"
-        cache_hit = retriever._result_cache.get(
-            request.query, client_id, cache_doc_id,
-            query_embedding=original_embedding,
-        )
-        if cache_hit is not None:
-            cached_results, answer_data = cache_hit
-            if answer_data is not None:
+            # Check no-sources-enabled edge case
+            if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex and not sources_cfg.families:
+                no_src_msg = "No sources are enabled. Please enable at least one source to search."
+                yield _sse_event("token", no_src_msg)
+                yield _sse_event("sources", [])
                 elapsed = (time.time() - start_time) * 1000
-                logger.info(f"Stream: full-pipeline cache hit in {elapsed:.0f}ms")
-                yield _sse_event("sources", answer_data["sources"])
-                yield _sse_event("token", answer_data["answer"])
-                _save_messages(conversation_id, request.query, answer_data["answer"], answer_data["sources"], elapsed)
-                _auto_title(conversation_id, request.query)
+                _save_messages(conversation_id, request.query, no_src_msg, [], elapsed)
                 yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
                 return
 
-        # Unified DB retrieval with source_origins filter
-        source_origins = []
-        if sources_cfg.cylaw:
-            source_origins.append("cylaw")
-        if sources_cfg.hudoc:
-            source_origins.append("hudoc")
-        if sources_cfg.eurlex:
-            source_origins.append("eurlex")
+            # Check full-pipeline cache (key includes toggle state)
+            retriever = services["retriever"]
+            logger.info("Stream: calling embed_query...")
+            original_embedding = retriever.embeddings.embed_query(request.query)
+            logger.info("Stream: embed_query done")
+            toggle_key = _source_toggle_key(sources_cfg)
+            cache_doc_id = f"{request.document_id or ''}|{toggle_key}"
+            cache_hit = retriever._result_cache.get(
+                request.query, client_id, cache_doc_id,
+                query_embedding=original_embedding,
+            )
+            if cache_hit is not None:
+                cached_results, answer_data = cache_hit
+                if answer_data is not None:
+                    elapsed = (time.time() - start_time) * 1000
+                    logger.info(f"Stream: full-pipeline cache hit in {elapsed:.0f}ms")
+                    yield _sse_event("sources", answer_data["sources"])
+                    yield _sse_event("token", answer_data["answer"])
+                    _save_messages(conversation_id, request.query, answer_data["answer"], answer_data["sources"], elapsed)
+                    _auto_title(conversation_id, request.query)
+                    yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
+                    return
 
-        # Include user-uploaded docs when family toggles are active
-        family_ids = sources_cfg.families if sources_cfg.families else None
+            # Unified DB retrieval with source_origins filter
+            source_origins = []
+            if sources_cfg.cylaw:
+                source_origins.append("cylaw")
+            if sources_cfg.hudoc:
+                source_origins.append("hudoc")
+            if sources_cfg.eurlex:
+                source_origins.append("eurlex")
 
-        # Per-query language detection
-        query_lang = detect_query_language(request.query)
+            # Include user-uploaded docs when family toggles are active
+            family_ids = sources_cfg.families if sources_cfg.families else None
 
-        cited_contents, all_sources = _retrieve_from_db(
-            request.query, retriever, client_id, request.document_id,
-            request.top_k, original_embedding, services, store, source_origins,
-            family_ids=family_ids, conversation_id=conversation_id, query_lang=query_lang,
-        )
+            # Per-query language detection
+            query_lang = detect_query_language(request.query)
 
-        if not all_sources:
-            no_result_msg = "No relevant information found in the enabled sources."
-            yield _sse_event("token", no_result_msg)
-            yield _sse_event("sources", [])
-            elapsed = (time.time() - start_time) * 1000
-            _save_messages(conversation_id, request.query, no_result_msg, [], elapsed)
-            yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
-            return
-
-        # Send sources immediately so frontend can show them while answer streams
-        sources_serialized = [s.model_dump() for s in all_sources]
-        yield _sse_event("sources", sources_serialized)
-
-        # Build LLM context
-        context = _build_context_string(cited_contents, all_sources)
-        full_answer = ""
-        try:
-            llm_client = _container.get_llm_client()
-            system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
-
-            stream = llm_client.chat.completions.create(
-                model=lang_config.llm_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
-                ],
-                max_tokens=3500,
-                temperature=0.2,
-                stream=True,
+            cited_contents, all_sources = _retrieve_from_db(
+                request.query, retriever, client_id, request.document_id,
+                request.top_k, original_embedding, services, store, source_origins,
+                family_ids=family_ids, conversation_id=conversation_id, query_lang=query_lang,
             )
 
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    # Strip stray asterisks from streamed tokens
-                    token = token.replace('*', '')
-                    full_answer += token
-                    yield _sse_event("token", token)
+            if not all_sources:
+                no_result_msg = "No relevant information found in the enabled sources."
+                yield _sse_event("token", no_result_msg)
+                yield _sse_event("sources", [])
+                elapsed = (time.time() - start_time) * 1000
+                _save_messages(conversation_id, request.query, no_result_msg, [], elapsed)
+                yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
+                return
+
+            # Send sources immediately so frontend can show them while answer streams
+            sources_serialized = [s.model_dump() for s in all_sources]
+            yield _sse_event("sources", sources_serialized)
+
+            # Build LLM context
+            context = _build_context_string(cited_contents, all_sources)
+            full_answer = ""
+            try:
+                llm_client = _container.get_llm_client()
+                system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
+
+                stream = llm_client.chat.completions.create(
+                    model=lang_config.llm_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
+                    ],
+                    max_tokens=3500,
+                    temperature=0.2,
+                    stream=True,
+                )
+
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        token = token.replace('*', '')
+                        full_answer += token
+                        yield _sse_event("token", token)
+
+            except Exception as e:
+                from openai import APITimeoutError
+                if isinstance(e, APITimeoutError):
+                    logger.error(f"Stream: LLM timed out ({query_lang}): {request.query[:100]}")
+                    fallback = "I found relevant information but the answer generation timed out. See sources below."
+                else:
+                    logger.error(f"Stream: LLM failed ({query_lang}): {type(e).__name__}: {e}")
+                    fallback = "I found relevant information but couldn't generate a summary. See sources below."
+                full_answer = fallback
+                yield _sse_event("token", fallback)
+
+            # Cache the full pipeline result
+            answer_data = {
+                "answer": full_answer,
+                "sources": sources_serialized,
+            }
+            retriever._result_cache.set(
+                request.query, [], client_id, cache_doc_id,
+                query_embedding=original_embedding,
+                answer_data=answer_data,
+            )
+
+            # Save messages to DB
+            elapsed = (time.time() - start_time) * 1000
+            _save_messages(conversation_id, request.query, full_answer, sources_serialized, elapsed)
+            _auto_title(conversation_id, request.query)
+
+            yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
 
         except Exception as e:
-            from openai import APITimeoutError
-            if isinstance(e, APITimeoutError):
-                logger.error(f"Stream: LLM timed out ({query_lang}): {request.query[:100]}")
-                fallback = "I found relevant information but the answer generation timed out. See sources below."
-            else:
-                logger.error(f"Stream: LLM failed ({query_lang}): {type(e).__name__}: {e}")
-                fallback = "I found relevant information but couldn't generate a summary. See sources below."
-            full_answer = fallback
-            yield _sse_event("token", fallback)
-
-        # Cache the full pipeline result
-        answer_data = {
-            "answer": full_answer,
-            "sources": sources_serialized,
-        }
-        retriever._result_cache.set(
-            request.query, [], client_id, cache_doc_id,
-            query_embedding=original_embedding,
-            answer_data=answer_data,
-        )
-
-        # Save messages to DB
-        elapsed = (time.time() - start_time) * 1000
-        _save_messages(conversation_id, request.query, full_answer, sources_serialized, elapsed)
-        _auto_title(conversation_id, request.query)
-
-        yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})
+            logger.error(f"Stream generator crashed: {type(e).__name__}: {e}", exc_info=True)
+            yield _sse_event("error", f"Server error: {type(e).__name__}: {e}")
 
     return StreamingResponse(
         generate(),
