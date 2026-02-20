@@ -231,6 +231,13 @@ class VectorStore:
         finally:
             self._release_connection(conn)
 
+    def _safe_rollback(self, conn) -> None:
+        """Rollback a connection, ignoring errors if the connection is dead."""
+        try:
+            conn.rollback()
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            pass
+
     def close(self) -> None:
         """Close database connection(s)."""
         if self._pool:
@@ -338,7 +345,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Row-Level Security enabled on all tables")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Failed to enable RLS: {e}")
             raise
         finally:
@@ -358,7 +365,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Row-Level Security disabled")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Failed to disable RLS: {e}")
             raise
         finally:
@@ -424,7 +431,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Authentication schema initialized")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Auth schema initialization failed: {e}")
             raise
         finally:
@@ -465,7 +472,7 @@ class VectorStore:
             logger.info(f"API key created for client {client_id}")
             return raw_key
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Failed to create API key: {e}")
             raise
         finally:
@@ -668,7 +675,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Schema initialized successfully")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Schema initialization failed: {e}")
             raise
         finally:
@@ -707,7 +714,7 @@ class VectorStore:
                 conn.commit()
             logger.info(f"Vector index created (type: {index_type})")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Vector index creation failed: {e}")
             raise
         finally:
@@ -757,7 +764,7 @@ class VectorStore:
                 conn.commit()
             logger.info("HNSW index created successfully")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"HNSW index creation failed: {e}")
             raise
         finally:
@@ -850,7 +857,7 @@ class VectorStore:
                 ))
                 conn.commit()
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Document insert failed: {e}")
             raise
         finally:
@@ -944,7 +951,7 @@ class VectorStore:
                 conn.commit()
             logger.info(f"Batch inserted {len(chunks)} chunks (source_origin={source_origin})")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Chunk insert failed: {e}")
             raise
         finally:
@@ -1499,7 +1506,7 @@ class VectorStore:
             logger.info("Migration completed: Added paragraph tracking columns")
             return True
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Migration failed: {e}")
             return False
         finally:
@@ -1540,7 +1547,7 @@ class VectorStore:
             logger.info("Migration completed: Added source_origin column with indexes")
             return True
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"source_origin migration failed: {e}")
             return False
         finally:
@@ -1577,7 +1584,7 @@ class VectorStore:
                 logger.warning(f"Document {document_id} not found (or wrong tenant)")
             return deleted
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Document deletion failed: {e}")
             raise
         finally:
@@ -1775,7 +1782,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Tenant config schema initialized")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Tenant config schema init failed: {e}")
             raise
         finally:
@@ -1865,7 +1872,7 @@ class VectorStore:
                 conn.commit()
             logger.info(f"Tenant config set for {client_id}: lang={config.language}")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Failed to set tenant config: {e}")
             raise
         finally:
@@ -1941,7 +1948,7 @@ class VectorStore:
             logger.info("Migration completed: User auth & conversation schema created")
             return True
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"User auth schema migration failed: {e}")
             return False
         finally:
@@ -1961,12 +1968,11 @@ class VectorStore:
         """
         Create a new user or get existing one by google_sub.
         Updates last_login, name, and avatar_url on each login.
+        Retries once on stale connection (SSL drop).
 
         Returns:
             Dict with id, google_sub, email, name, avatar_url
         """
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO users (google_sub, email, name, avatar_url)
         VALUES (%s, %s, %s, %s)
@@ -1978,33 +1984,44 @@ class VectorStore:
         RETURNING id, google_sub, email, name, avatar_url
         """
 
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, (google_sub, email, name, avatar_url))
-                row = cur.fetchone()
-                conn.commit()
+        for attempt in range(2):
+            conn = self._ensure_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (google_sub, email, name, avatar_url))
+                    row = cur.fetchone()
+                    conn.commit()
 
-            if isinstance(row, dict):
+                self._release_connection(conn)
+                if isinstance(row, dict):
+                    return {
+                        "id": str(row["id"]),
+                        "google_sub": row["google_sub"],
+                        "email": row["email"],
+                        "name": row["name"],
+                        "avatar_url": row["avatar_url"],
+                    }
                 return {
-                    "id": str(row["id"]),
-                    "google_sub": row["google_sub"],
-                    "email": row["email"],
-                    "name": row["name"],
-                    "avatar_url": row["avatar_url"],
+                    "id": str(row[0]),
+                    "google_sub": row[1],
+                    "email": row[2],
+                    "name": row[3],
+                    "avatar_url": row[4],
                 }
-            return {
-                "id": str(row[0]),
-                "google_sub": row[1],
-                "email": row[2],
-                "name": row[3],
-                "avatar_url": row[4],
-            }
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"create_or_get_user failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                self._safe_rollback(conn)
+                self._release_connection(conn)
+                if attempt == 0:
+                    logger.warning(f"create_or_get_user: stale connection, reconnecting: {e}")
+                    self.connect()
+                    continue
+                logger.error(f"create_or_get_user failed after retry: {e}")
+                raise
+            except Exception as e:
+                self._safe_rollback(conn)
+                self._release_connection(conn)
+                logger.error(f"create_or_get_user failed: {e}")
+                raise
 
     def get_user_by_id(self, user_id: str) -> Optional[dict]:
         """Get user by ID. Returns None if not found."""
@@ -2077,7 +2094,7 @@ class VectorStore:
                 "updated_at": row[4].isoformat(),
             }
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"create_conversation failed: {e}")
             raise
         finally:
@@ -2147,7 +2164,7 @@ class VectorStore:
                 conn.commit()
             return deleted
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"delete_conversation failed: {e}")
             raise
         finally:
@@ -2169,7 +2186,7 @@ class VectorStore:
                 conn.commit()
             return updated
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"rename_conversation failed: {e}")
             raise
         finally:
@@ -2187,7 +2204,7 @@ class VectorStore:
                 )
                 conn.commit()
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.warning(f"touch_conversation failed: {e}")
         finally:
             self._release_connection(conn)
@@ -2242,7 +2259,7 @@ class VectorStore:
                 "created_at": row[6].isoformat(),
             }
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"add_message failed: {e}")
             raise
         finally:
@@ -2348,7 +2365,7 @@ class VectorStore:
             logger.info("Migration completed: Document families schema created")
             return True
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Document families migration failed: {e}")
             return False
         finally:
@@ -2388,7 +2405,7 @@ class VectorStore:
                 "updated_at": row[5].isoformat(),
             }
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             if "unique" in str(e).lower():
                 raise ValueError(f"Family '{name}' already exists")
             logger.error(f"create_family failed: {e}")
@@ -2460,7 +2477,7 @@ class VectorStore:
                 conn.commit()
             return updated
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             if "unique" in str(e).lower():
                 raise ValueError(f"Family '{name}' already exists")
             logger.error(f"rename_family failed: {e}")
@@ -2489,7 +2506,7 @@ class VectorStore:
                 conn.commit()
             return deleted
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"delete_family failed: {e}")
             raise
         finally:
@@ -2511,7 +2528,7 @@ class VectorStore:
                 conn.commit()
             return updated
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"set_family_active failed: {e}")
             raise
         finally:
@@ -2575,7 +2592,7 @@ class VectorStore:
                 conn.commit()
             return updated
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"move_document_to_family failed: {e}")
             raise
         finally:
@@ -2597,7 +2614,7 @@ class VectorStore:
                 conn.commit()
             logger.info("Greek FTS index created")
         except Exception as e:
-            conn.rollback()
+            self._safe_rollback(conn)
             logger.error(f"Failed to create Greek FTS index: {e}")
             raise
         finally:
