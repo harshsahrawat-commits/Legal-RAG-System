@@ -1,17 +1,13 @@
 import { create } from 'zustand'
-import type { SourceInfo, SourceToggles, ChatMessage, UserInfo, Conversation } from './types'
+import type { SourceInfo, SourceToggles, ChatMessage, UserInfo, Conversation, DocumentFamily } from './types'
 
 interface AppState {
-  // Auth (JWT-based)
+  // Auth (Google OAuth + JWT)
   jwt: string | null
   user: UserInfo | null
   isAuthenticated: boolean
   setAuth: (token: string, user: UserInfo) => void
   logout: () => void
-
-  // Legacy API key support (kept for backward compat)
-  apiKey: string | null
-  setApiKey: (key: string) => void
 
   // Messages (current conversation)
   messages: ChatMessage[]
@@ -28,7 +24,12 @@ interface AppState {
   setSelectedDocumentId: (id: string | null) => void
 
   sourceToggles: SourceToggles
-  setSourceToggle: (source: keyof SourceToggles, enabled: boolean) => void
+  setSourceToggle: (source: keyof Omit<SourceToggles, 'families'>, enabled: boolean) => void
+  setFamilyToggle: (familyId: string, enabled: boolean) => void
+
+  // Document families
+  families: DocumentFamily[]
+  setFamilies: (families: DocumentFamily[]) => void
 
   sourcePanelOpen: boolean
   selectedSourceIndex: number
@@ -52,39 +53,28 @@ function loadUser(): UserInfo | null {
 }
 
 export const useStore = create<AppState>((set, get) => ({
-  // Auth — check JWT first, fall back to legacy apiKey
   jwt: localStorage.getItem('jwt'),
   user: loadUser(),
-  isAuthenticated: !!(localStorage.getItem('jwt') || localStorage.getItem('apiKey')),
-
-  apiKey: localStorage.getItem('apiKey'),
+  isAuthenticated: !!localStorage.getItem('jwt'),
 
   setAuth: (token: string, user: UserInfo) => {
     localStorage.setItem('jwt', token)
     localStorage.setItem('user', JSON.stringify(user))
-    // Clear legacy key if present
-    localStorage.removeItem('apiKey')
-    set({ jwt: token, user, apiKey: null, isAuthenticated: true })
-  },
-
-  setApiKey: (key: string) => {
-    localStorage.setItem('apiKey', key)
-    set({ apiKey: key, isAuthenticated: true })
+    set({ jwt: token, user, isAuthenticated: true })
   },
 
   logout: () => {
     localStorage.removeItem('jwt')
     localStorage.removeItem('user')
-    localStorage.removeItem('apiKey')
     sessionStorage.removeItem('chatMessages')
     set({
       jwt: null,
       user: null,
-      apiKey: null,
       isAuthenticated: false,
       messages: [],
       conversations: [],
       activeConversationId: null,
+      families: [],
     })
   },
 
@@ -105,10 +95,20 @@ export const useStore = create<AppState>((set, get) => ({
   selectedDocumentId: null,
   setSelectedDocumentId: (id) => set({ selectedDocumentId: id }),
 
-  sourceToggles: { cylaw: true, hudoc: true, eurlex: true },
+  sourceToggles: { cylaw: true, hudoc: true, eurlex: true, families: [] },
   setSourceToggle: (source, enabled) => set((state) => ({
     sourceToggles: { ...state.sourceToggles, [source]: enabled },
   })),
+  setFamilyToggle: (familyId, enabled) => set((state) => {
+    const current = state.sourceToggles.families
+    if (enabled) {
+      return { sourceToggles: { ...state.sourceToggles, families: [...current, familyId] } }
+    }
+    return { sourceToggles: { ...state.sourceToggles, families: current.filter((id) => id !== familyId) } }
+  }),
+
+  families: [],
+  setFamilies: (families) => set({ families }),
 
   sourcePanelOpen: false,
   selectedSourceIndex: 0,

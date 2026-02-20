@@ -609,7 +609,7 @@ class VectorStore:
             -- Contextual retrieval metadata
             contextualized BOOLEAN DEFAULT FALSE,
             context_prefix TEXT,
-            embedding_model VARCHAR(50) DEFAULT 'cohere-embed-v3',
+            embedding_model VARCHAR(50) DEFAULT 'voyage-law-2',
             parent_chunk_id UUID,
             token_count INT,
             embedding VECTOR({self.config.embedding_dimensions}),
@@ -809,20 +809,27 @@ class VectorStore:
         file_path: Optional[str] = None,
         page_count: int = 0,
         metadata: Optional[dict] = None,
+        family_id: Optional[str] = None,
+        upload_scope: str = "persistent",
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> None:
         """Insert a document record."""
         conn = self._ensure_connection()
 
         sql = """
         INSERT INTO legal_documents
-            (id, client_id, title, document_type, jurisdiction, file_path, page_count, metadata)
+            (id, client_id, title, document_type, jurisdiction, file_path, page_count, metadata,
+             family_id, upload_scope, conversation_id, user_id)
         VALUES
-            (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)
+            (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s,
+             %s, %s, %s, %s)
         ON CONFLICT (id) DO UPDATE SET
             title = EXCLUDED.title,
             document_type = EXCLUDED.document_type,
             jurisdiction = EXCLUDED.jurisdiction,
-            metadata = EXCLUDED.metadata
+            metadata = EXCLUDED.metadata,
+            family_id = EXCLUDED.family_id
         """
 
         try:
@@ -836,6 +843,10 @@ class VectorStore:
                     file_path,
                     page_count,
                     json.dumps(metadata or {}),
+                    family_id,
+                    upload_scope,
+                    conversation_id,
+                    user_id,
                 ))
                 conn.commit()
         except Exception as e:
@@ -851,6 +862,7 @@ class VectorStore:
         embeddings: list[list[float]],
         client_id: Optional[str] = None,
         source_origin: str = "cylaw",
+        family_id: Optional[str] = None,
     ) -> None:
         """
         Batch insert chunks with embeddings using execute_values for 50x faster ingestion.
@@ -859,7 +871,8 @@ class VectorStore:
             chunks: List of chunk dictionaries (from Chunk.to_dict())
             embeddings: Corresponding embedding vectors
             client_id: Optional client ID for multi-tenant isolation
-            source_origin: Source origin label ("cylaw", "hudoc", or "eurlex")
+            source_origin: Source origin label ("cylaw", "hudoc", "eurlex", "user", "session")
+            family_id: Optional family UUID to assign chunks to
         """
         conn = self._ensure_connection()
 
@@ -876,7 +889,7 @@ class VectorStore:
             (id, document_id, client_id, content, section_title, hierarchy_path,
              level, page_numbers, paragraph_start, paragraph_end, original_paragraph_numbers,
              contextualized, context_prefix, parent_chunk_id, token_count, embedding,
-             legal_references, context_before, context_after, metadata, source_origin)
+             legal_references, context_before, context_after, metadata, source_origin, family_id)
         VALUES %s
         ON CONFLICT (id) DO UPDATE SET
             content = EXCLUDED.content,
@@ -886,7 +899,8 @@ class VectorStore:
             original_paragraph_numbers = EXCLUDED.original_paragraph_numbers,
             contextualized = EXCLUDED.contextualized,
             context_prefix = EXCLUDED.context_prefix,
-            source_origin = EXCLUDED.source_origin
+            source_origin = EXCLUDED.source_origin,
+            family_id = EXCLUDED.family_id
         """
 
         # Prepare all values as a list of tuples
@@ -914,6 +928,7 @@ class VectorStore:
                 chunk.get("context_after", ""),
                 json.dumps(chunk.get("metadata", {})),
                 source_origin,
+                family_id,
             ))
 
         try:
@@ -923,7 +938,7 @@ class VectorStore:
                     cur,
                     sql,
                     values,
-                    template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s, %s)",
+                    template="(%s::uuid, %s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, %s, %s::vector, %s, %s, %s, %s, %s, %s::uuid)",
                     page_size=1000,
                 )
                 conn.commit()
@@ -1066,6 +1081,8 @@ class VectorStore:
         document_id: Optional[str] = None,
         min_score: float = 0.0,
         source_origins: Optional[list[str]] = None,
+        family_ids: Optional[list[str]] = None,
+        conversation_id: Optional[str] = None,
     ) -> list[SearchResult]:
         """
         Semantic search using vector similarity.
@@ -1077,6 +1094,8 @@ class VectorStore:
             document_id: Optional filter by document
             min_score: Minimum similarity score (0-1)
             source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc"])
+            family_ids: Optional list of family UUIDs to include
+            conversation_id: Optional conversation UUID to include session docs from
 
         Returns:
             List of SearchResult objects
@@ -1088,17 +1107,36 @@ class VectorStore:
         filter_params = []
 
         if client_id:
-            filters.append("client_id = %s::uuid")
+            filters.append("c.client_id = %s::uuid")
             filter_params.append(client_id)
 
         if document_id:
-            filters.append("document_id = %s::uuid")
+            filters.append("c.document_id = %s::uuid")
             filter_params.append(document_id)
+
+        # Source filter: OR logic between source_origins, family_ids, and conversation session docs
+        source_conditions = []
+        source_params = []
 
         if source_origins:
             placeholders = ",".join(["%s"] * len(source_origins))
-            filters.append(f"source_origin IN ({placeholders})")
-            filter_params.extend(source_origins)
+            source_conditions.append(f"c.source_origin IN ({placeholders})")
+            source_params.extend(source_origins)
+
+        if family_ids:
+            placeholders = ",".join(["%s::uuid"] * len(family_ids))
+            source_conditions.append(f"c.family_id IN ({placeholders})")
+            source_params.extend(family_ids)
+
+        if conversation_id:
+            source_conditions.append(
+                "c.document_id IN (SELECT id FROM legal_documents WHERE conversation_id = %s::uuid AND upload_scope = 'session')"
+            )
+            source_params.append(conversation_id)
+
+        if source_conditions:
+            filters.append(f"({' OR '.join(source_conditions)})")
+            filter_params.extend(source_params)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
 
@@ -1109,23 +1147,23 @@ class VectorStore:
         ]
         sql = f"""
         SELECT
-            id as chunk_id,
-            document_id,
-            content,
-            section_title,
-            hierarchy_path,
-            page_numbers,
-            paragraph_start,
-            paragraph_end,
-            original_paragraph_numbers,
-            level,
-            legal_references,
-            context_before,
-            context_after,
-            1 - (embedding <=> %s::vector) as score
-        FROM {self.config.table_name}
+            c.id as chunk_id,
+            c.document_id,
+            c.content,
+            c.section_title,
+            c.hierarchy_path,
+            c.page_numbers,
+            c.paragraph_start,
+            c.paragraph_end,
+            c.original_paragraph_numbers,
+            c.level,
+            c.legal_references,
+            c.context_before,
+            c.context_after,
+            1 - (c.embedding <=> %s::vector) as score
+        FROM {self.config.table_name} c
         {where_clause}
-        ORDER BY embedding <=> %s::vector
+        ORDER BY c.embedding <=> %s::vector
         LIMIT %s
         """
 
@@ -1183,6 +1221,8 @@ class VectorStore:
         document_id: Optional[str] = None,
         fts_language: str = "english",
         source_origins: Optional[list[str]] = None,
+        family_ids: Optional[list[str]] = None,
+        conversation_id: Optional[str] = None,
     ) -> list[SearchResult]:
         """
         Full-text keyword search using PostgreSQL ts_rank.
@@ -1194,6 +1234,8 @@ class VectorStore:
             document_id: Optional filter by document
             fts_language: PostgreSQL FTS config name ("english" or "greek")
             source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc"])
+            family_ids: Optional list of family UUIDs to include
+            conversation_id: Optional conversation UUID to include session docs from
 
         Returns:
             List of SearchResult objects
@@ -1216,10 +1258,29 @@ class VectorStore:
             where_extra += " AND document_id = %s::uuid"
             filter_params.append(document_id)
 
+        # Source filter: OR logic between source_origins, family_ids, and conversation session docs
+        source_conditions = []
+        source_params = []
+
         if source_origins:
             placeholders = ",".join(["%s"] * len(source_origins))
-            where_extra += f" AND source_origin IN ({placeholders})"
-            filter_params.extend(source_origins)
+            source_conditions.append(f"source_origin IN ({placeholders})")
+            source_params.extend(source_origins)
+
+        if family_ids:
+            placeholders = ",".join(["%s::uuid"] * len(family_ids))
+            source_conditions.append(f"family_id IN ({placeholders})")
+            source_params.extend(family_ids)
+
+        if conversation_id:
+            source_conditions.append(
+                "document_id IN (SELECT id FROM legal_documents WHERE conversation_id = %s::uuid AND upload_scope = 'session')"
+            )
+            source_params.append(conversation_id)
+
+        if source_conditions:
+            where_extra += f" AND ({' OR '.join(source_conditions)})"
+            filter_params.extend(source_params)
 
         kw_columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
@@ -1407,7 +1468,7 @@ class VectorStore:
         ADD COLUMN IF NOT EXISTS context_prefix TEXT;
 
         ALTER TABLE {self.config.table_name}
-        ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(50) DEFAULT 'cohere-embed-v3';
+        ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(50) DEFAULT 'voyage-law-2';
 
         -- Create indexes for paragraph queries
         CREATE INDEX IF NOT EXISTS idx_chunks_paragraphs
@@ -1626,28 +1687,34 @@ class VectorStore:
         finally:
             self._release_connection(conn)
 
-    def list_documents(self, client_id: Optional[str] = None) -> list[dict]:
+    def list_documents(self, client_id: Optional[str] = None, exclude_session: bool = True) -> list[dict]:
         """
         Get all documents in the database.
 
         Args:
             client_id: Optional filter by client for multi-tenant isolation
+            exclude_session: If True, excludes session-scoped (chat-uploaded) documents
 
         Returns:
-            List of document dictionaries with id, title, type, etc.
+            List of document dictionaries with id, title, type, family_id, etc.
         """
         conn = self._ensure_connection()
 
         columns = ["id", "title", "document_type", "jurisdiction", "page_count",
-                   "metadata", "created_at", "file_path"]
+                   "metadata", "created_at", "file_path", "family_id"]
         sql = f"""
         SELECT {', '.join(columns)}
         FROM legal_documents
         """
+        conditions = []
         params = []
         if client_id:
-            sql += " WHERE client_id = %s::uuid"
+            conditions.append("client_id = %s::uuid")
             params.append(client_id)
+        if exclude_session:
+            conditions.append("(upload_scope IS NULL OR upload_scope != 'session')")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY created_at DESC"
 
         try:
@@ -2214,6 +2281,293 @@ class VectorStore:
         finally:
             self._release_connection(conn)
 
+    # =========================================================================
+    # Document Families
+    # =========================================================================
+
+    def migrate_add_document_families(self) -> bool:
+        """
+        Migration: Create document_families table and add family_id columns.
+
+        Safe to run multiple times (uses IF NOT EXISTS).
+
+        Returns:
+            True if migration succeeded, False otherwise
+        """
+        conn = self._ensure_connection()
+
+        migration_sql = f"""
+        -- Document families table
+        CREATE TABLE IF NOT EXISTS document_families (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name VARCHAR(100) NOT NULL,
+            is_active BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(user_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_families_user
+            ON document_families(user_id);
+
+        -- Add family_id to legal_documents
+        ALTER TABLE legal_documents
+        ADD COLUMN IF NOT EXISTS family_id UUID REFERENCES document_families(id) ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_legal_docs_family
+            ON legal_documents(family_id);
+
+        -- Add family_id to document_chunks
+        ALTER TABLE {self.config.table_name}
+        ADD COLUMN IF NOT EXISTS family_id UUID;
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_family
+            ON {self.config.table_name}(family_id);
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_client_family
+            ON {self.config.table_name}(client_id, family_id);
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(migration_sql)
+                conn.commit()
+            logger.info("Migration completed: Document families schema created")
+            return True
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Document families migration failed: {e}")
+            return False
+        finally:
+            self._release_connection(conn)
+
+    def create_family(self, user_id: str, name: str) -> dict:
+        """Create a new document family for a user."""
+        conn = self._ensure_connection()
+
+        sql = """
+        INSERT INTO document_families (user_id, name)
+        VALUES (%s::uuid, %s)
+        RETURNING id, user_id, name, is_active, created_at, updated_at
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id, name))
+                row = cur.fetchone()
+                conn.commit()
+
+            if isinstance(row, dict):
+                return {
+                    "id": str(row["id"]),
+                    "user_id": str(row["user_id"]),
+                    "name": row["name"],
+                    "is_active": row["is_active"],
+                    "created_at": row["created_at"].isoformat(),
+                    "updated_at": row["updated_at"].isoformat(),
+                }
+            return {
+                "id": str(row[0]),
+                "user_id": str(row[1]),
+                "name": row[2],
+                "is_active": row[3],
+                "created_at": row[4].isoformat(),
+                "updated_at": row[5].isoformat(),
+            }
+        except Exception as e:
+            conn.rollback()
+            if "unique" in str(e).lower():
+                raise ValueError(f"Family '{name}' already exists")
+            logger.error(f"create_family failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def list_families(self, user_id: str) -> list[dict]:
+        """List all document families for a user."""
+        conn = self._ensure_connection()
+
+        sql = """
+        SELECT f.id, f.user_id, f.name, f.is_active, f.created_at, f.updated_at,
+               COUNT(ld.id) as document_count
+        FROM document_families f
+        LEFT JOIN legal_documents ld ON ld.family_id = f.id
+        WHERE f.user_id = %s::uuid
+        GROUP BY f.id
+        ORDER BY f.name
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                rows = cur.fetchall()
+
+            result = []
+            for row in rows:
+                if isinstance(row, dict):
+                    result.append({
+                        "id": str(row["id"]),
+                        "user_id": str(row["user_id"]),
+                        "name": row["name"],
+                        "is_active": row["is_active"],
+                        "document_count": row["document_count"],
+                        "created_at": row["created_at"].isoformat(),
+                        "updated_at": row["updated_at"].isoformat(),
+                    })
+                else:
+                    result.append({
+                        "id": str(row[0]),
+                        "user_id": str(row[1]),
+                        "name": row[2],
+                        "is_active": row[3],
+                        "document_count": row[6],
+                        "created_at": row[4].isoformat(),
+                        "updated_at": row[5].isoformat(),
+                    })
+            return result
+        except Exception as e:
+            logger.error(f"list_families failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def rename_family(self, family_id: str, user_id: str, name: str) -> bool:
+        """Rename a family (user-isolated)."""
+        conn = self._ensure_connection()
+
+        sql = """
+        UPDATE document_families SET name = %s, updated_at = NOW()
+        WHERE id = %s::uuid AND user_id = %s::uuid
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (name, family_id, user_id))
+                updated = cur.rowcount > 0
+                conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            if "unique" in str(e).lower():
+                raise ValueError(f"Family '{name}' already exists")
+            logger.error(f"rename_family failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def delete_family(self, family_id: str, user_id: str) -> bool:
+        """Delete a family. Documents are unassigned (family_id set to NULL via ON DELETE SET NULL)."""
+        conn = self._ensure_connection()
+
+        try:
+            with conn.cursor() as cur:
+                # Unassign chunks from this family
+                cur.execute(
+                    f"UPDATE {self.config.table_name} SET family_id = NULL "
+                    "WHERE family_id = %s::uuid AND client_id = %s::uuid",
+                    (family_id, user_id),
+                )
+                # Delete the family (cascades ON DELETE SET NULL for legal_documents)
+                cur.execute(
+                    "DELETE FROM document_families WHERE id = %s::uuid AND user_id = %s::uuid",
+                    (family_id, user_id),
+                )
+                deleted = cur.rowcount > 0
+                conn.commit()
+            return deleted
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"delete_family failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def set_family_active(self, family_id: str, user_id: str, is_active: bool) -> bool:
+        """Toggle a family's active status. Caller must enforce max 3 active."""
+        conn = self._ensure_connection()
+
+        sql = """
+        UPDATE document_families SET is_active = %s, updated_at = NOW()
+        WHERE id = %s::uuid AND user_id = %s::uuid
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (is_active, family_id, user_id))
+                updated = cur.rowcount > 0
+                conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"set_family_active failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
+    def get_active_family_count(self, user_id: str) -> int:
+        """Get the number of active families for a user."""
+        conn = self._ensure_connection()
+
+        sql = "SELECT COUNT(*) FROM document_families WHERE user_id = %s::uuid AND is_active = TRUE"
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                row = cur.fetchone()
+            return row["count"] if isinstance(row, dict) else row[0]
+        except Exception as e:
+            logger.error(f"get_active_family_count failed: {e}")
+            return 0
+        finally:
+            self._release_connection(conn)
+
+    def move_document_to_family(
+        self, document_id: str, family_id: Optional[str], user_id: str
+    ) -> bool:
+        """Move a document (and its chunks) to a family (or unassign with family_id=None)."""
+        conn = self._ensure_connection()
+
+        try:
+            with conn.cursor() as cur:
+                # Update legal_documents
+                if family_id:
+                    cur.execute(
+                        "UPDATE legal_documents SET family_id = %s::uuid "
+                        "WHERE id = %s::uuid AND client_id = %s::uuid",
+                        (family_id, document_id, user_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE legal_documents SET family_id = NULL "
+                        "WHERE id = %s::uuid AND client_id = %s::uuid",
+                        (document_id, user_id),
+                    )
+                updated = cur.rowcount > 0
+
+                if updated:
+                    # Update chunks
+                    if family_id:
+                        cur.execute(
+                            f"UPDATE {self.config.table_name} SET family_id = %s::uuid "
+                            "WHERE document_id = %s::uuid AND client_id = %s::uuid",
+                            (family_id, document_id, user_id),
+                        )
+                    else:
+                        cur.execute(
+                            f"UPDATE {self.config.table_name} SET family_id = NULL "
+                            "WHERE document_id = %s::uuid AND client_id = %s::uuid",
+                            (document_id, user_id),
+                        )
+
+                conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"move_document_to_family failed: {e}")
+            raise
+        finally:
+            self._release_connection(conn)
+
     def create_greek_fts_index(self) -> None:
         """Create Greek FTS index on-demand (when first Greek tenant is created)."""
         conn = self._ensure_connection()
@@ -2302,9 +2656,14 @@ if __name__ == "__main__":
             ok = store.migrate_add_user_auth_schema()
             print("user auth migration " + ("succeeded" if ok else "FAILED"))
 
+        elif command == "migrate-families":
+            # Add document families table and family_id columns
+            ok = store.migrate_add_document_families()
+            print("document families migration " + ("succeeded" if ok else "FAILED"))
+
         else:
             print(f"Unknown command: {command}")
-            print("Available commands: setup-auth, enable-rls, create-demo-key, test-rls, migrate-source-origin, migrate-user-auth")
+            print("Available commands: setup-auth, enable-rls, create-demo-key, test-rls, migrate-source-origin, migrate-user-auth, migrate-families")
     else:
         import re as _re
         print("Vector store initialized successfully")

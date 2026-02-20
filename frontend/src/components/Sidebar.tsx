@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Plus, MessageSquare, Trash2, Pencil, Check, X,
-  ChevronLeft, Settings, LogOut, Loader2, MoreHorizontal,
+  ChevronLeft, Settings, LogOut, MoreHorizontal,
 } from 'lucide-react'
 import { api } from '../api'
 import { useStore } from '../store'
@@ -45,7 +45,7 @@ export default function Sidebar() {
       const { data } = await api.conversations.list()
       setConversations(data)
     } catch {
-      // Silently fail — might be API key user without conversation support
+      // Silently fail on conversation list errors
     } finally {
       setLoading(false)
     }
@@ -290,8 +290,10 @@ export default function Sidebar() {
 const styles: Record<string, React.CSSProperties> = {
   sidebar: {
     width: 280,
-    background: 'var(--bg-1)',
-    borderRight: '1px solid var(--border)',
+    background: 'var(--glass-bg)',
+    backdropFilter: 'blur(16px)',
+    WebkitBackdropFilter: 'blur(16px)',
+    borderRight: '1px solid var(--glass-border)',
     display: 'flex',
     flexDirection: 'column',
     flexShrink: 0,
@@ -299,8 +301,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   collapsedSidebar: {
     width: 48,
-    background: 'var(--bg-1)',
-    borderRight: '1px solid var(--border)',
+    background: 'var(--glass-bg)',
+    backdropFilter: 'blur(16px)',
+    WebkitBackdropFilter: 'blur(16px)',
+    borderRight: '1px solid var(--glass-border)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -381,13 +385,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 10px',
     borderRadius: 'var(--radius-sm)',
     cursor: 'pointer',
-    transition: 'background 0.1s',
+    transition: 'background 0.2s, border-color 0.2s',
+    borderLeft: '2px solid transparent',
   },
   convItemActive: {
-    background: 'var(--bg-2)',
+    background: 'var(--accent-dim)',
+    borderLeftColor: 'var(--accent)',
   },
   convItemDanger: {
-    background: 'rgba(239,68,68,0.08)',
+    background: 'rgba(255,102,102,0.08)',
   },
   convTitle: {
     flex: 1,
@@ -418,10 +424,11 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 50,
     minWidth: 140,
     background: 'var(--bg-1)',
-    border: '1px solid var(--border)',
+    border: '1px solid var(--glass-border)',
     borderRadius: 'var(--radius-sm)',
     boxShadow: 'var(--shadow-lg)',
     padding: 4,
+    animation: 'fadeIn 0.15s ease',
   },
   menuItem: {
     display: 'flex',
@@ -478,7 +485,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   footer: {
     padding: '12px',
-    borderTop: '1px solid var(--border)',
+    borderTop: '1px solid var(--glass-border)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -501,7 +508,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 28,
     height: 28,
     borderRadius: '50%',
-    background: 'var(--accent-dim, rgba(6,182,212,0.15))',
+    background: 'var(--accent-dim)',
     color: 'var(--accent)',
     display: 'flex',
     alignItems: 'center',

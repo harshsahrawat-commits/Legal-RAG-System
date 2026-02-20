@@ -30,6 +30,8 @@ from .api_models import (
     GoogleAuthRequest, AuthResponse, UserInfo,
     ConversationCreate, ConversationResponse, ConversationRename,
     MessageResponse, StreamQueryRequest,
+    FamilyCreate, FamilyRename, FamilySetActive, FamilyResponse,
+    MoveDocumentRequest,
 )
 from .language_config import TenantLanguageConfig
 from .language_patterns import LLM_PROMPTS
@@ -174,9 +176,10 @@ _rate_limiter = RateLimiter(
 
 
 async def check_rate_limit(request: Request):
-    """FastAPI dependency that enforces rate limiting per API key."""
-    api_key = request.headers.get("x-api-key", request.client.host)
-    if not _rate_limiter.is_allowed(api_key):
+    """FastAPI dependency that enforces rate limiting per user/IP."""
+    auth_header = request.headers.get("authorization", "")
+    identifier = auth_header[7:20] if auth_header.startswith("Bearer ") else request.client.host
+    if not _rate_limiter.is_allowed(identifier):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
@@ -202,6 +205,7 @@ class ServiceContainer:
                 self._store.initialize_auth_schema()
                 self._store.initialize_tenant_config_schema()
                 self._store.migrate_add_user_auth_schema()
+                self._store.migrate_add_document_families()
             except Exception as e:
                 logger.warning(f"Schema init partial: {e}")
         return self._store
@@ -257,15 +261,14 @@ _container = ServiceContainer()
 # =============================================================================
 
 async def get_authenticated_user(request: Request) -> dict:
-    """Authenticate via JWT Bearer token (primary) or API key (legacy).
+    """Authenticate via JWT Bearer token (Google OAuth).
 
     Returns dict with:
-      - user_id: str (UUID of the users table row) — for JWT auth
-      - client_id: str (UUID) — for API key auth (legacy)
+      - user_id: str (UUID of the users table row)
+      - client_id: str (alias for user_id, backward compat)
       - email, name: from JWT payload
-      - auth_method: "jwt" | "api_key"
+      - auth_method: "jwt"
     """
-    # 1) Try JWT Bearer token
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
@@ -281,18 +284,7 @@ async def get_authenticated_user(request: Request) -> dict:
             }
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # 2) Fall back to API key
-    api_key = request.headers.get("x-api-key", "")
-    if api_key:
-        store = _container.get_store()
-        result = store.validate_api_key(api_key)
-        if result:
-            result["auth_method"] = "api_key"
-            result["user_id"] = result["client_id"]  # alias
-            return result
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    raise HTTPException(status_code=401, detail="Missing authentication")
+    raise HTTPException(status_code=401, detail="Missing authentication. Please sign in with Google.")
 
 
 # Backward-compatible alias
@@ -337,7 +329,8 @@ def _invalidate_client_cache(client_id: str, lang_config: TenantLanguageConfig =
 
 def _source_toggle_key(sources) -> str:
     """Build a string key from source toggles for cache differentiation."""
-    return f"cylaw={int(sources.cylaw)},hudoc={int(sources.hudoc)},eurlex={int(sources.eurlex)}"
+    families = ",".join(sorted(sources.families)) if sources.families else ""
+    return f"cylaw={int(sources.cylaw)},hudoc={int(sources.hudoc)},eurlex={int(sources.eurlex)},fam={families}"
 
 
 # Origin label mapping for LLM context
@@ -349,8 +342,9 @@ _ORIGIN_LABELS = {
 
 
 def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
-                      query_embedding, services, store, source_origins):
-    """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex).
+                      query_embedding, services, store, source_origins,
+                      family_ids=None, conversation_id=None):
+    """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex, families, session docs).
 
     All sources are stored in the same pgvector DB with a `source_origin` column.
     This replaces the old 3-way parallel retrieval (DB + HUDOC API + EUR-Lex SPARQL).
@@ -366,6 +360,8 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
             top_k=top_k,
             query_embedding=query_embedding,
             source_origins=source_origins,
+            family_ids=family_ids,
+            conversation_id=conversation_id,
         )
         results = [r for r in results if r.hierarchy_path != "Document"]
         if not results:
@@ -461,16 +457,34 @@ async def health_check():
 @app.post("/api/v1/documents/upload", response_model=UploadResponse, dependencies=[Depends(check_rate_limit)])
 async def upload_document(
     file: UploadFile = File(...),
+    family_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    upload_scope: str = "persistent",
     client: dict = Depends(get_authenticated_client),
     lang_config: TenantLanguageConfig = Depends(get_tenant_config),
 ):
-    """Upload and process a PDF document."""
+    """Upload and process a PDF document.
+
+    Query params:
+      - family_id: Optional family UUID to assign the document to
+      - conversation_id: Optional conversation UUID for chat-scoped uploads
+      - upload_scope: 'persistent' (default) or 'session' (chat-scoped)
+    """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     client_id = client["client_id"]
+    user_id = client.get("user_id", client_id)
     services = _container.get_services(lang_config)
     store = _container.get_store()
+
+    # Determine source_origin based on context
+    if upload_scope == "session":
+        source_origin = "session"
+    elif family_id:
+        source_origin = "user"
+    else:
+        source_origin = "user"
 
     # Save to temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -509,9 +523,16 @@ async def upload_document(
             jurisdiction=parsed.metadata.jurisdiction,
             file_path=str(stored_path),
             page_count=parsed.metadata.page_count,
+            family_id=family_id,
+            upload_scope=upload_scope,
+            conversation_id=conversation_id if upload_scope == "session" else None,
+            user_id=user_id,
         )
         chunk_dicts = [c.to_dict() for c in chunks]
-        store.insert_chunks(chunk_dicts, embeddings, client_id=client_id)
+        store.insert_chunks(
+            chunk_dicts, embeddings, client_id=client_id,
+            source_origin=source_origin, family_id=family_id,
+        )
 
         # Audit
         store.log_audit(
@@ -519,7 +540,8 @@ async def upload_document(
             action="ingest",
             resource_type="document",
             resource_id=parsed.metadata.document_id,
-            details={"title": parsed.metadata.title, "chunks": len(chunks)},
+            details={"title": parsed.metadata.title, "chunks": len(chunks),
+                      "family_id": family_id, "upload_scope": upload_scope},
         )
 
         # Invalidate answer cache for this client (new document may change answers)
@@ -541,9 +563,9 @@ async def upload_document(
 async def list_documents(
     client: dict = Depends(get_authenticated_client),
 ):
-    """List all documents for the authenticated tenant."""
+    """List all persistent documents for the authenticated tenant (excludes session docs)."""
     store = _container.get_store()
-    docs = store.list_documents(client_id=client["client_id"])
+    docs = store.list_documents(client_id=client["client_id"], exclude_session=True)
     result = []
     for d in docs:
         # Derive CyLaw URL from metadata stem, file_path, or title
@@ -557,6 +579,7 @@ async def list_documents(
             page_count=d.get("page_count", 0),
             created_at=str(d.get("created_at", "")),
             cylaw_url=generate_cylaw_url(stem),
+            family_id=str(d["family_id"]) if d.get("family_id") else None,
         ))
     return result
 
@@ -609,7 +632,7 @@ async def query_documents(
     sources_cfg = request.sources
 
     # Check that at least one source is enabled
-    if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex:
+    if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex and not sources_cfg.families:
         return QueryResponse(
             answer="No sources are enabled. Please enable at least one source to search.",
             sources=[],
@@ -662,9 +685,13 @@ async def query_documents(
     if sources_cfg.eurlex:
         source_origins.append("eurlex")
 
+    # Include user-uploaded docs when family toggles are active
+    family_ids = sources_cfg.families if sources_cfg.families else None
+
     cited_contents, all_sources = _retrieve_from_db(
         request.query, retriever, client_id, request.document_id,
         request.top_k, original_embedding, services, store, source_origins,
+        family_ids=family_ids,
     )
 
     if not all_sources:
@@ -807,7 +834,7 @@ async def query_documents_stream(
             yield _sse_event("conversation_id", conversation_id)
 
         # Check no-sources-enabled edge case
-        if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex:
+        if not sources_cfg.cylaw and not sources_cfg.hudoc and not sources_cfg.eurlex and not sources_cfg.families:
             no_src_msg = "No sources are enabled. Please enable at least one source to search."
             yield _sse_event("token", no_src_msg)
             yield _sse_event("sources", [])
@@ -846,9 +873,13 @@ async def query_documents_stream(
         if sources_cfg.eurlex:
             source_origins.append("eurlex")
 
+        # Include user-uploaded docs when family toggles are active
+        family_ids = sources_cfg.families if sources_cfg.families else None
+
         cited_contents, all_sources = _retrieve_from_db(
             request.query, retriever, client_id, request.document_id,
             request.top_k, original_embedding, services, store, source_origins,
+            family_ids=family_ids, conversation_id=conversation_id,
         )
 
         if not all_sources:
@@ -1000,6 +1031,118 @@ async def update_config(
 
 
 # =============================================================================
+# Document Family Endpoints
+# =============================================================================
+
+@app.get("/api/v1/families", response_model=list[FamilyResponse])
+async def list_families(
+    client: dict = Depends(get_authenticated_user),
+):
+    """List all document families for the authenticated user."""
+    store = _container.get_store()
+    families = store.list_families(client["user_id"])
+    return [
+        FamilyResponse(
+            id=f["id"],
+            name=f["name"],
+            is_active=f["is_active"],
+            document_count=f.get("document_count", 0),
+            created_at=f["created_at"],
+            updated_at=f["updated_at"],
+        )
+        for f in families
+    ]
+
+
+@app.post("/api/v1/families", response_model=FamilyResponse)
+async def create_family(
+    body: FamilyCreate,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Create a new document family."""
+    store = _container.get_store()
+    try:
+        f = store.create_family(client["user_id"], body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return FamilyResponse(
+        id=f["id"],
+        name=f["name"],
+        is_active=f["is_active"],
+        document_count=0,
+        created_at=f["created_at"],
+        updated_at=f["updated_at"],
+    )
+
+
+@app.put("/api/v1/families/{family_id}/name")
+async def rename_family_endpoint(
+    family_id: str,
+    body: FamilyRename,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Rename a document family."""
+    store = _container.get_store()
+    try:
+        updated = store.rename_family(family_id, client["user_id"], body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Family not found")
+    return {"status": "updated", "name": body.name}
+
+
+@app.put("/api/v1/families/{family_id}/active")
+async def set_family_active_endpoint(
+    family_id: str,
+    body: FamilySetActive,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Toggle a family's active status (max 3 active enforced)."""
+    store = _container.get_store()
+    if body.is_active:
+        count = store.get_active_family_count(client["user_id"])
+        if count >= 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum 3 active families allowed. Deactivate one first.",
+            )
+    updated = store.set_family_active(family_id, client["user_id"], body.is_active)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Family not found")
+    return {"status": "updated", "is_active": body.is_active}
+
+
+@app.delete("/api/v1/families/{family_id}")
+async def delete_family_endpoint(
+    family_id: str,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Delete a document family. Documents are unassigned (not deleted)."""
+    store = _container.get_store()
+    deleted = store.delete_family(family_id, client["user_id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Family not found")
+    _invalidate_client_cache(client["client_id"])
+    return {"status": "deleted", "family_id": family_id}
+
+
+@app.put("/api/v1/documents/{document_id}/family")
+async def move_document_to_family_endpoint(
+    document_id: str,
+    body: MoveDocumentRequest,
+    client: dict = Depends(get_authenticated_user),
+):
+    """Move a document to a family (or unassign with family_id=null)."""
+    store = _container.get_store()
+    updated = store.move_document_to_family(document_id, body.family_id, client["user_id"])
+    if not updated:
+        raise HTTPException(status_code=404, detail="Document not found")
+    _invalidate_client_cache(client["client_id"])
+    return {"status": "updated", "family_id": body.family_id}
+
+
+# =============================================================================
 # Auth Endpoints
 # =============================================================================
 
@@ -1044,9 +1187,8 @@ async def get_me(client: dict = Depends(get_authenticated_user)):
                 name=user["name"],
                 avatar_url=user["avatar_url"],
             )
-    # Fallback for API key users
     return UserInfo(
-        id=client.get("user_id", client.get("client_id", "")),
+        id=client.get("user_id", ""),
         email=client.get("email", ""),
         name=client.get("name", ""),
     )

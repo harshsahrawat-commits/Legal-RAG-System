@@ -573,6 +573,8 @@ class HybridRetriever:
         use_cache: bool = True,
         query_embedding: Optional[list[float]] = None,
         source_origins: Optional[list[str]] = None,
+        family_ids: Optional[list[str]] = None,
+        conversation_id: Optional[str] = None,
     ) -> list[SearchResult]:
         """
         Retrieve relevant chunks for a query.
@@ -693,6 +695,8 @@ class HybridRetriever:
                 client_id=client_id,
                 document_id=document_id,
                 source_origins=source_origins,
+                family_ids=family_ids,
+                conversation_id=conversation_id,
             )
             all_vector_results.extend(vector_results)
 
@@ -704,6 +708,8 @@ class HybridRetriever:
                 document_id=document_id,
                 fts_language=self._language_config.fts_language,
                 source_origins=source_origins,
+                family_ids=family_ids,
+                conversation_id=conversation_id,
             )
             all_keyword_results.extend(keyword_results)
 
@@ -715,6 +721,8 @@ class HybridRetriever:
                 client_id=client_id,
                 document_id=document_id,
                 source_origins=source_origins,
+                family_ids=family_ids,
+                conversation_id=conversation_id,
             )
             all_vector_results.extend(hyde_results)
             logger.debug(f"{name} search returned {len(hyde_results)} results")

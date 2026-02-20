@@ -12,6 +12,7 @@ import type {
   UserInfo,
   Conversation,
   MessageRecord,
+  DocumentFamily,
 } from './types'
 
 const client = axios.create({
@@ -20,11 +21,9 @@ const client = axios.create({
 })
 
 client.interceptors.request.use((config) => {
-  const { jwt, apiKey } = useStore.getState()
+  const { jwt } = useStore.getState()
   if (jwt) {
     config.headers['Authorization'] = `Bearer ${jwt}`
-  } else if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
   }
   return config
 })
@@ -43,20 +42,13 @@ client.interceptors.response.use(
  * Get the auth header for fetch-based requests (SSE streaming).
  */
 function getAuthHeaders(): Record<string, string> {
-  const { jwt, apiKey } = useStore.getState()
+  const { jwt } = useStore.getState()
   if (jwt) return { 'Authorization': `Bearer ${jwt}` }
-  if (apiKey) return { 'X-API-Key': apiKey }
   return {}
 }
 
 export const api = {
   health: () => client.get<HealthResponse>('/api/v1/health'),
-
-  // Legacy API key validation
-  validateKey: (key: string) =>
-    client.get<DocumentInfo[]>('/api/v1/documents', {
-      headers: { 'X-API-Key': key },
-    }),
 
   // Auth
   auth: {
@@ -69,18 +61,38 @@ export const api = {
   // Documents
   documents: {
     list: () => client.get<DocumentInfo[]>('/api/v1/documents'),
-    upload: (file: File, onProgress?: (pct: number) => void) => {
+    upload: (file: File, onProgress?: (pct: number) => void, familyId?: string, conversationId?: string, uploadScope?: string) => {
       const form = new FormData()
       form.append('file', file)
+      const params: Record<string, string> = {}
+      if (familyId) params.family_id = familyId
+      if (conversationId) params.conversation_id = conversationId
+      if (uploadScope) params.upload_scope = uploadScope
       return client.post<UploadResponse>('/api/v1/documents/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 600000,
+        params,
         onUploadProgress: (e) => {
           if (onProgress && e.total) onProgress(Math.round((e.loaded * 100) / e.total))
         },
       })
     },
     delete: (id: string) => client.delete(`/api/v1/documents/${id}`),
+    moveToFamily: (documentId: string, familyId: string | null) =>
+      client.put(`/api/v1/documents/${documentId}/family`, { family_id: familyId }),
+  },
+
+  // Document Families
+  families: {
+    list: () => client.get<DocumentFamily[]>('/api/v1/families'),
+    create: (name: string) =>
+      client.post<DocumentFamily>('/api/v1/families', { name }),
+    rename: (id: string, name: string) =>
+      client.put(`/api/v1/families/${id}/name`, { name }),
+    setActive: (id: string, isActive: boolean) =>
+      client.put(`/api/v1/families/${id}/active`, { is_active: isActive }),
+    delete: (id: string) =>
+      client.delete(`/api/v1/families/${id}`),
   },
 
   // Conversations

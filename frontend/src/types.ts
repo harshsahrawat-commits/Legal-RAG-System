@@ -2,6 +2,7 @@ export interface SourceToggles {
   cylaw: boolean
   hudoc: boolean
   eurlex: boolean
+  families: string[]  // family UUIDs
 }
 
 export interface SourceInfo {
@@ -37,6 +38,16 @@ export interface DocumentInfo {
   chunks: number | null
   created_at: string | null
   cylaw_url?: string | null
+  family_id?: string | null
+}
+
+export interface DocumentFamily {
+  id: string
+  name: string
+  is_active: boolean
+  document_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface UploadResponse {

@@ -12,6 +12,7 @@ class SourceToggles(BaseModel):
     cylaw: bool = True
     hudoc: bool = True
     eurlex: bool = True
+    families: list[str] = []  # family UUIDs to include
 
 
 class QueryRequest(BaseModel):
@@ -58,6 +59,7 @@ class DocumentInfo(BaseModel):
     chunks: Optional[int] = None
     created_at: Optional[str] = None
     cylaw_url: Optional[str] = None
+    family_id: Optional[str] = None
 
 
 class UploadResponse(BaseModel):
@@ -158,3 +160,37 @@ class StreamQueryRequest(BaseModel):
     document_id: Optional[str] = None
     top_k: int = Field(default=10, ge=1, le=50)
     sources: SourceToggles = SourceToggles()
+
+
+# =========================================================================
+# Document Family models
+# =========================================================================
+
+class FamilyCreate(BaseModel):
+    """Request body for creating a document family."""
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class FamilyRename(BaseModel):
+    """Request body for renaming a document family."""
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class FamilySetActive(BaseModel):
+    """Request body for toggling family active status."""
+    is_active: bool
+
+
+class FamilyResponse(BaseModel):
+    """Response body for a document family."""
+    id: str
+    name: str
+    is_active: bool
+    document_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class MoveDocumentRequest(BaseModel):
+    """Request body for moving a document to a family."""
+    family_id: Optional[str] = None  # None to unassign

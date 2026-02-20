@@ -27,12 +27,13 @@ export default function ChatInterface() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false)
+  const [sessionFileName, setSessionFileName] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const closeSourcePanel = useStore((s) => s.closeSourcePanel)
   const sourcePanelOpen = useStore((s) => s.sourcePanelOpen)
-  const anySourceOff = !sourceToggles.cylaw || !sourceToggles.hudoc || !sourceToggles.eurlex
+  const anySourceOff = !sourceToggles.cylaw || !sourceToggles.hudoc || !sourceToggles.eurlex || sourceToggles.families.length > 0
 
   // Auto-scroll as new tokens stream in
   const lastContentLen = useRef(0)
@@ -147,6 +148,30 @@ export default function ChatInterface() {
     submitQuery(question)
   }
 
+  const handleChatUpload = async (file: File) => {
+    // Chat-scoped upload: attach PDF to current conversation
+    let convId = activeConversationId
+    if (!convId) {
+      // Create a conversation first
+      try {
+        const { data } = await api.conversations.create('New Chat')
+        convId = data.id
+        setActiveConversationId(convId)
+        api.conversations.list().then(({ data: convos }) => setConversations(convos)).catch(() => {})
+      } catch {
+        console.error('Failed to create conversation for upload')
+        return
+      }
+    }
+    try {
+      await api.documents.upload(file, undefined, undefined, convId, 'session')
+      setSessionFileName(file.name)
+      window.dispatchEvent(new Event('documents-changed'))
+    } catch (err) {
+      console.error('Chat upload failed:', err)
+    }
+  }
+
   return (
     <div style={styles.container}>
       <div ref={listRef} style={styles.messageList}>
@@ -185,6 +210,20 @@ export default function ChatInterface() {
         ))}
       </div>
 
+      {/* Session file indicator */}
+      {sessionFileName && (
+        <div style={styles.sessionChip}>
+          <span style={styles.sessionChipText}>{sessionFileName}</span>
+          <button
+            style={styles.sessionChipClose}
+            onClick={() => setSessionFileName(null)}
+            title="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} style={styles.inputBar}>
         {/* Upload button */}
         <input
@@ -195,12 +234,7 @@ export default function ChatInterface() {
           onChange={async (e) => {
             const file = e.target.files?.[0]
             if (!file) return
-            try {
-              await api.documents.upload(file)
-              window.dispatchEvent(new Event('documents-changed'))
-            } catch (err) {
-              console.error('Upload failed:', err)
-            }
+            await handleChatUpload(file)
             e.target.value = ''
           }}
         />
@@ -208,7 +242,7 @@ export default function ChatInterface() {
           type="button"
           style={styles.iconBtn}
           onClick={() => fileInputRef.current?.click()}
-          title="Upload document"
+          title="Upload document to this chat"
           disabled={loading}
         >
           <Plus size={18} />
@@ -338,13 +372,41 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'left' as const,
     lineHeight: 1.4,
   },
+  sessionChip: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 12px',
+    margin: '0 24px',
+    background: 'var(--accent-dim)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: 12,
+    color: 'var(--accent)',
+  },
+  sessionChipText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    flex: 1,
+  },
+  sessionChipClose: {
+    background: 'none',
+    border: 'none',
+    color: 'var(--accent)',
+    fontSize: 16,
+    cursor: 'pointer',
+    padding: '0 2px',
+    lineHeight: 1,
+  },
   inputBar: {
     display: 'flex',
     alignItems: 'flex-end',
     gap: 10,
     padding: '16px 24px',
-    borderTop: '1px solid var(--border)',
-    background: 'var(--bg-1)',
+    borderTop: '1px solid var(--glass-border)',
+    background: 'var(--glass-bg)',
+    backdropFilter: 'blur(16px)',
+    WebkitBackdropFilter: 'blur(16px)',
     flexShrink: 0,
   },
   textarea: {
@@ -360,6 +422,7 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
     maxHeight: 120,
     fontFamily: 'inherit',
+    transition: 'border-color 0.2s ease, box-shadow 0.3s ease',
   },
   iconBtn: {
     display: 'flex',

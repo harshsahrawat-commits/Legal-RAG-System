@@ -2,8 +2,8 @@ import { useRef, useEffect } from 'react'
 import { useStore } from '../store'
 import type { SourceToggles } from '../types'
 
-const SOURCE_CONFIG: { key: keyof SourceToggles; label: string; sublabel: string; color: string }[] = [
-  { key: 'cylaw', label: 'CyLaw Documents', sublabel: 'Uploaded PDFs', color: '#06b6d4' },
+const SOURCE_CONFIG: { key: keyof Omit<SourceToggles, 'families'>; label: string; sublabel: string; color: string }[] = [
+  { key: 'cylaw', label: 'CyLaw Documents', sublabel: 'Cyprus Law', color: '#00f0ff' },
   { key: 'hudoc', label: 'HUDOC (ECHR)', sublabel: 'European Court of Human Rights', color: '#8b5cf6' },
   { key: 'eurlex', label: 'EUR-Lex (EU Law)', sublabel: 'EU legislation & regulations', color: '#f59e0b' },
 ]
@@ -16,6 +16,8 @@ interface Props {
 export default function SourceTogglePopover({ open, onClose }: Props) {
   const sourceToggles = useStore((s) => s.sourceToggles)
   const setSourceToggle = useStore((s) => s.setSourceToggle)
+  const families = useStore((s) => s.families)
+  const setFamilyToggle = useStore((s) => s.setFamilyToggle)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -37,6 +39,8 @@ export default function SourceTogglePopover({ open, onClose }: Props) {
   }, [open, onClose])
 
   if (!open) return null
+
+  const activeFamilies = families.filter((f) => f.is_active)
 
   return (
     <div ref={ref} style={styles.popover}>
@@ -72,6 +76,47 @@ export default function SourceTogglePopover({ open, onClose }: Props) {
           </button>
         </div>
       ))}
+
+      {activeFamilies.length > 0 && (
+        <>
+          <div style={styles.divider} />
+          <div style={styles.header}>My Collections</div>
+          {activeFamilies.map((fam) => {
+            const isOn = sourceToggles.families.includes(fam.id)
+            return (
+              <div key={fam.id} style={styles.row} onClick={() => setFamilyToggle(fam.id, !isOn)}>
+                <div style={styles.labelGroup}>
+                  <div style={styles.labelRow}>
+                    <span style={{ ...styles.dot, background: '#10b981' }} />
+                    <span style={styles.label}>{fam.name}</span>
+                  </div>
+                  <span style={styles.sublabel}>{fam.document_count} document{fam.document_count !== 1 ? 's' : ''}</span>
+                </div>
+                <button
+                  style={{
+                    ...styles.toggle,
+                    background: isOn ? '#10b981' : 'var(--bg-3)',
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setFamilyToggle(fam.id, !isOn)
+                  }}
+                  aria-label={`Toggle ${fam.name}`}
+                  role="switch"
+                  aria-checked={isOn}
+                >
+                  <span
+                    style={{
+                      ...styles.toggleDot,
+                      transform: isOn ? 'translateX(16px)' : 'translateX(0)',
+                    }}
+                  />
+                </button>
+              </div>
+            )
+          })}
+        </>
+      )}
     </div>
   )
 }
@@ -83,12 +128,15 @@ const styles: Record<string, React.CSSProperties> = {
     right: 0,
     marginBottom: 8,
     width: 280,
-    background: 'var(--bg-1)',
-    border: '1px solid var(--border)',
+    background: 'var(--glass-bg)',
+    backdropFilter: 'blur(16px)',
+    WebkitBackdropFilter: 'blur(16px)',
+    border: '1px solid var(--glass-border)',
     borderRadius: 'var(--radius-md, 8px)',
     boxShadow: 'var(--shadow-lg, 0 4px 12px rgba(0,0,0,0.3))',
     zIndex: 100,
     overflow: 'hidden',
+    animation: 'fadeIn 0.15s ease',
   },
   header: {
     padding: '10px 14px',
@@ -97,7 +145,12 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     color: 'var(--text-3)',
-    borderBottom: '1px solid var(--border)',
+    borderBottom: '1px solid var(--glass-border)',
+  },
+  divider: {
+    height: 1,
+    background: 'var(--glass-border)',
+    margin: '4px 0',
   },
   row: {
     display: 'flex',
