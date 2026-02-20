@@ -1103,12 +1103,11 @@ class VectorStore:
         conn = self._ensure_connection()
 
         # Build query with optional filters
+        DEMO_CLIENT_ID = "00000000-0000-0000-0000-000000000001"
+        PUBLIC_SOURCES = {"cylaw", "hudoc", "eurlex"}
+
         filters = []
         filter_params = []
-
-        if client_id:
-            filters.append("c.client_id = %s::uuid")
-            filter_params.append(client_id)
 
         if document_id:
             filters.append("c.document_id = %s::uuid")
@@ -1119,14 +1118,21 @@ class VectorStore:
         source_params = []
 
         if source_origins:
-            placeholders = ",".join(["%s"] * len(source_origins))
-            source_conditions.append(f"c.source_origin IN ({placeholders})")
-            source_params.extend(source_origins)
+            # Public sources use demo client_id; include them regardless of current user
+            public = [s for s in source_origins if s in PUBLIC_SOURCES]
+            if public:
+                placeholders = ",".join(["%s"] * len(public))
+                source_conditions.append(
+                    f"(c.source_origin IN ({placeholders}) AND c.client_id = %s::uuid)"
+                )
+                source_params.extend(public)
+                source_params.append(DEMO_CLIENT_ID)
 
-        if family_ids:
+        if family_ids and client_id:
             placeholders = ",".join(["%s::uuid"] * len(family_ids))
-            source_conditions.append(f"c.family_id IN ({placeholders})")
+            source_conditions.append(f"(c.family_id IN ({placeholders}) AND c.client_id = %s::uuid)")
             source_params.extend(family_ids)
+            source_params.append(client_id)
 
         if conversation_id:
             source_conditions.append(
@@ -1245,14 +1251,13 @@ class VectorStore:
             logger.warning(f"Invalid FTS language '{fts_language}', falling back to 'english'")
             fts_language = "english"
 
+        DEMO_CLIENT_ID = "00000000-0000-0000-0000-000000000001"
+        PUBLIC_SOURCES = {"cylaw", "hudoc", "eurlex"}
+
         conn = self._ensure_connection()
 
         filter_params = []
         where_extra = ""
-
-        if client_id:
-            where_extra += " AND client_id = %s::uuid"
-            filter_params.append(client_id)
 
         if document_id:
             where_extra += " AND document_id = %s::uuid"
@@ -1263,14 +1268,20 @@ class VectorStore:
         source_params = []
 
         if source_origins:
-            placeholders = ",".join(["%s"] * len(source_origins))
-            source_conditions.append(f"source_origin IN ({placeholders})")
-            source_params.extend(source_origins)
+            public = [s for s in source_origins if s in PUBLIC_SOURCES]
+            if public:
+                placeholders = ",".join(["%s"] * len(public))
+                source_conditions.append(
+                    f"(source_origin IN ({placeholders}) AND client_id = %s::uuid)"
+                )
+                source_params.extend(public)
+                source_params.append(DEMO_CLIENT_ID)
 
-        if family_ids:
+        if family_ids and client_id:
             placeholders = ",".join(["%s::uuid"] * len(family_ids))
-            source_conditions.append(f"family_id IN ({placeholders})")
+            source_conditions.append(f"(family_id IN ({placeholders}) AND client_id = %s::uuid)")
             source_params.extend(family_ids)
+            source_params.append(client_id)
 
         if conversation_id:
             source_conditions.append(
