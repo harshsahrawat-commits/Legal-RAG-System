@@ -1103,7 +1103,8 @@ class VectorStore:
         conn = self._ensure_connection()
 
         # Build query with optional filters
-        DEMO_CLIENT_ID = "00000000-0000-0000-0000-000000000001"
+        # Public corpus client_id: all CyLaw/HUDOC/EUR-Lex docs were ingested with this ID
+        CORPUS_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
         PUBLIC_SOURCES = {"cylaw", "hudoc", "eurlex"}
 
         filters = []
@@ -1126,7 +1127,7 @@ class VectorStore:
                     f"(c.source_origin IN ({placeholders}) AND c.client_id = %s::uuid)"
                 )
                 source_params.extend(public)
-                source_params.append(DEMO_CLIENT_ID)
+                source_params.append(CORPUS_CLIENT_ID)
 
         if family_ids and client_id:
             placeholders = ",".join(["%s::uuid"] * len(family_ids))
@@ -1251,7 +1252,8 @@ class VectorStore:
             logger.warning(f"Invalid FTS language '{fts_language}', falling back to 'english'")
             fts_language = "english"
 
-        DEMO_CLIENT_ID = "00000000-0000-0000-0000-000000000001"
+        # Public corpus client_id: all CyLaw/HUDOC/EUR-Lex docs were ingested with this ID
+        CORPUS_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
         PUBLIC_SOURCES = {"cylaw", "hudoc", "eurlex"}
 
         conn = self._ensure_connection()
@@ -1275,7 +1277,7 @@ class VectorStore:
                     f"(source_origin IN ({placeholders}) AND client_id = %s::uuid)"
                 )
                 source_params.extend(public)
-                source_params.append(DEMO_CLIENT_ID)
+                source_params.append(CORPUS_CLIENT_ID)
 
         if family_ids and client_id:
             placeholders = ",".join(["%s::uuid"] * len(family_ids))
