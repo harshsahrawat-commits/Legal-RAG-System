@@ -8,6 +8,7 @@ Run with: uvicorn execution.legal_rag.api:app --host 0.0.0.0 --port 8000
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -40,6 +41,21 @@ from .auth import verify_google_token, create_session_jwt, verify_session_jwt
 # Load environment variables
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Greek Unicode range regex for per-query language detection
+_GREEK_RE = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF]')
+
+def detect_query_language(query: str) -> str:
+    """Detect whether a query is Greek or English based on character content.
+
+    Returns "el" if >=30% of alphabetic characters are Greek, otherwise "en".
+    This allows mixed-language queries to be handled appropriately.
+    """
+    alpha_chars = [c for c in query if c.isalpha()]
+    if not alpha_chars:
+        return "en"
+    greek_count = sum(1 for c in alpha_chars if _GREEK_RE.match(c))
+    return "el" if greek_count / len(alpha_chars) >= 0.3 else "en"
 
 # Persistent storage directory for uploaded document files
 DOCUMENT_STORAGE_DIR = Path(os.getenv("DOCUMENT_STORAGE_DIR", "document_files"))
@@ -343,7 +359,7 @@ _ORIGIN_LABELS = {
 
 def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                       query_embedding, services, store, source_origins,
-                      family_ids=None, conversation_id=None):
+                      family_ids=None, conversation_id=None, query_lang=None):
     """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex, families, session docs).
 
     All sources are stored in the same pgvector DB with a `source_origin` column.
@@ -362,6 +378,7 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
             source_origins=source_origins,
             family_ids=family_ids,
             conversation_id=conversation_id,
+            query_lang=query_lang,
         )
         results = [r for r in results if r.hierarchy_path != "Document"]
         if not results:
@@ -688,10 +705,13 @@ async def query_documents(
     # Include user-uploaded docs when family toggles are active
     family_ids = sources_cfg.families if sources_cfg.families else None
 
+    # Per-query language detection
+    query_lang = detect_query_language(request.query)
+
     cited_contents, all_sources = _retrieve_from_db(
         request.query, retriever, client_id, request.document_id,
         request.top_k, original_embedding, services, store, source_origins,
-        family_ids=family_ids,
+        family_ids=family_ids, query_lang=query_lang,
     )
 
     if not all_sources:
@@ -703,12 +723,9 @@ async def query_documents(
 
     # Build LLM context
     context = _build_context_string(cited_contents, all_sources)
-
-    # Generate answer
-    lang = lang_config.language
     try:
         llm_client = _container.get_llm_client()
-        system_prompt = LLM_PROMPTS.get(lang, LLM_PROMPTS["en"])["rag_system"]
+        system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
 
         response = llm_client.chat.completions.create(
             model=lang_config.llm_model,
@@ -724,10 +741,10 @@ async def query_documents(
     except Exception as e:
         from openai import APITimeoutError
         if isinstance(e, APITimeoutError):
-            logger.error(f"LLM generation timed out for query ({lang}): {request.query[:100]}")
+            logger.error(f"LLM generation timed out for query ({query_lang}): {request.query[:100]}")
             answer = "I found relevant information but the answer generation timed out. See sources below."
         else:
-            logger.error(f"LLM generation failed ({lang}): {type(e).__name__}: {e}")
+            logger.error(f"LLM generation failed ({query_lang}): {type(e).__name__}: {e}")
             answer = "I found relevant information but couldn't generate a summary. See sources below."
 
     # Cache the full pipeline result
@@ -876,10 +893,13 @@ async def query_documents_stream(
         # Include user-uploaded docs when family toggles are active
         family_ids = sources_cfg.families if sources_cfg.families else None
 
+        # Per-query language detection
+        query_lang = detect_query_language(request.query)
+
         cited_contents, all_sources = _retrieve_from_db(
             request.query, retriever, client_id, request.document_id,
             request.top_k, original_embedding, services, store, source_origins,
-            family_ids=family_ids, conversation_id=conversation_id,
+            family_ids=family_ids, conversation_id=conversation_id, query_lang=query_lang,
         )
 
         if not all_sources:
@@ -897,13 +917,10 @@ async def query_documents_stream(
 
         # Build LLM context
         context = _build_context_string(cited_contents, all_sources)
-
-        # Stream answer generation
-        lang = lang_config.language
         full_answer = ""
         try:
             llm_client = _container.get_llm_client()
-            system_prompt = LLM_PROMPTS.get(lang, LLM_PROMPTS["en"])["rag_system"]
+            system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
 
             stream = llm_client.chat.completions.create(
                 model=lang_config.llm_model,
@@ -925,10 +942,10 @@ async def query_documents_stream(
         except Exception as e:
             from openai import APITimeoutError
             if isinstance(e, APITimeoutError):
-                logger.error(f"Stream: LLM timed out ({lang}): {request.query[:100]}")
+                logger.error(f"Stream: LLM timed out ({query_lang}): {request.query[:100]}")
                 fallback = "I found relevant information but the answer generation timed out. See sources below."
             else:
-                logger.error(f"Stream: LLM failed ({lang}): {type(e).__name__}: {e}")
+                logger.error(f"Stream: LLM failed ({query_lang}): {type(e).__name__}: {e}")
                 fallback = "I found relevant information but couldn't generate a summary. See sources below."
             full_answer = fallback
             yield _sse_event("token", fallback)

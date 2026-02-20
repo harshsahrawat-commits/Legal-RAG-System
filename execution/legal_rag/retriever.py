@@ -26,6 +26,7 @@ try:
         QUERY_CLASSIFICATION,
         PARAGRAPH_REFERENCE_PATTERNS,
         LLM_PROMPTS,
+        CROSS_LINGUAL_PROMPTS,
     )
 except ImportError:
     from vector_store import VectorStore, SearchResult
@@ -35,6 +36,7 @@ except ImportError:
         QUERY_CLASSIFICATION,
         PARAGRAPH_REFERENCE_PATTERNS,
         LLM_PROMPTS,
+        CROSS_LINGUAL_PROMPTS,
     )
 
 logger = logging.getLogger(__name__)
@@ -363,7 +365,7 @@ class HybridRetriever:
             )
         return self._enhancement_llm_client
 
-    def _classify_query(self, query: str) -> str:
+    def _classify_query(self, query: str, lang: Optional[str] = None) -> str:
         """
         Classify query type for adaptive processing (language-aware).
 
@@ -376,7 +378,8 @@ class HybridRetriever:
         Returns:
             Query classification: "simple", "factual", "analytical", or "standard"
         """
-        lang_patterns = QUERY_CLASSIFICATION.get(self._lang, QUERY_CLASSIFICATION["en"])
+        lang_patterns = QUERY_CLASSIFICATION.get(lang or self._lang, QUERY_CLASSIFICATION["en"])
+        effective_lang = lang or self._lang
         query_lower = query.lower().strip()
         word_count = len(query.split())
 
@@ -386,7 +389,7 @@ class HybridRetriever:
                 # Cap Greek queries at "standard" — HyDE generates English-style
                 # hypothetical docs which are less useful for Greek legal text,
                 # and the extra LLM call adds ~30s latency causing timeouts.
-                if self._lang == "el":
+                if effective_lang == "el":
                     logger.info(f"Query classified as 'standard' (analytical capped for Greek)")
                     return "standard"
                 logger.info(f"Query classified as 'analytical' (pattern match)")
@@ -436,7 +439,7 @@ class HybridRetriever:
         logger.info(f"Using '{query_type}' config: {query_config['description']}")
         return effective
 
-    def _extract_paragraph_reference(self, query: str) -> Optional[int]:
+    def _extract_paragraph_reference(self, query: str, lang: Optional[str] = None) -> Optional[int]:
         """
         Extract paragraph number from query if present (language-aware).
 
@@ -447,7 +450,7 @@ class HybridRetriever:
         Returns:
             Paragraph number if found, None otherwise
         """
-        patterns = PARAGRAPH_REFERENCE_PATTERNS.get(self._lang, PARAGRAPH_REFERENCE_PATTERNS["en"])
+        patterns = PARAGRAPH_REFERENCE_PATTERNS.get(lang or self._lang, PARAGRAPH_REFERENCE_PATTERNS["en"])
         query_lower = query.lower()
 
         for pattern in patterns:
@@ -459,7 +462,7 @@ class HybridRetriever:
 
         return None
 
-    def _expand_query(self, query: str) -> str:
+    def _expand_query(self, query: str, lang: Optional[str] = None) -> str:
         """
         Expand query with legal terminology and synonyms (language-aware).
 
@@ -469,7 +472,7 @@ class HybridRetriever:
         try:
             client = self._get_enhancement_llm_client()
 
-            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["query_expansion_system"]
+            system_prompt = LLM_PROMPTS.get(lang or self._lang, LLM_PROMPTS["en"])["query_expansion_system"]
 
             response = client.chat.completions.create(
                 model=self.ENHANCEMENT_MODEL,
@@ -493,7 +496,7 @@ class HybridRetriever:
             logger.warning(f"Query expansion failed: {e}. Using original query.")
             return query
 
-    def _generate_hyde_document(self, query: str) -> str:
+    def _generate_hyde_document(self, query: str, lang: Optional[str] = None) -> str:
         """
         Generate a Hypothetical Document for embedding (HyDE, language-aware).
 
@@ -504,7 +507,7 @@ class HybridRetriever:
         try:
             client = self._get_enhancement_llm_client()
 
-            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["hyde_system"]
+            system_prompt = LLM_PROMPTS.get(lang or self._lang, LLM_PROMPTS["en"])["hyde_system"]
 
             response = client.chat.completions.create(
                 model=self.ENHANCEMENT_MODEL,
@@ -528,7 +531,7 @@ class HybridRetriever:
             logger.warning(f"HyDE generation failed: {e}. Using original query.")
             return query
 
-    def _generate_query_variants(self, query: str) -> list[str]:
+    def _generate_query_variants(self, query: str, lang: Optional[str] = None) -> list[str]:
         """
         Generate multiple query variants for multi-query retrieval (language-aware).
 
@@ -538,7 +541,7 @@ class HybridRetriever:
         try:
             client = self._get_enhancement_llm_client()
 
-            system_prompt = LLM_PROMPTS.get(self._lang, LLM_PROMPTS["en"])["multi_query_system"]
+            system_prompt = LLM_PROMPTS.get(lang or self._lang, LLM_PROMPTS["en"])["multi_query_system"]
 
             response = client.chat.completions.create(
                 model=self.ENHANCEMENT_MODEL,
@@ -564,6 +567,68 @@ class HybridRetriever:
             logger.warning(f"Query variant generation failed: {e}. Using original query only.")
             return [query]
 
+    # Source language mapping: which document sources are in which language
+    SOURCE_LANGUAGES = {
+        "cylaw": "el",   # CyLaw docs are in Greek
+        "hudoc": "en",   # HUDOC docs are in English
+        "eurlex": "en",  # EUR-Lex docs are in English
+    }
+
+    def _translate_query(self, query: str, target_lang: str) -> Optional[str]:
+        """Translate a query to the target language for cross-lingual retrieval.
+
+        Used when the query language doesn't match the source document language
+        (e.g. Greek query searching English HUDOC docs, or English query searching Greek CyLaw).
+
+        Args:
+            query: Original query text
+            target_lang: Target language code ("en" or "el")
+
+        Returns:
+            Translated query string, or None if translation fails
+        """
+        prompt_key = f"to_{target_lang}"
+        system_prompt = CROSS_LINGUAL_PROMPTS.get(prompt_key)
+        if not system_prompt:
+            return None
+
+        try:
+            client = self._get_enhancement_llm_client()
+            response = client.chat.completions.create(
+                model=self.ENHANCEMENT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Translate: {query}"},
+                ],
+                max_tokens=150,
+                temperature=0.2,
+            )
+            raw = response.choices[0].message.content
+            translated = raw.strip() if raw else None
+            if translated:
+                logger.info(f"Cross-lingual translation ({target_lang}): '{query[:50]}' → '{translated[:50]}'")
+            return translated
+        except Exception as e:
+            logger.warning(f"Cross-lingual translation to {target_lang} failed: {e}")
+            return None
+
+    def _needs_cross_lingual(self, query_lang: str, source_origins: Optional[list[str]]) -> Optional[str]:
+        """Check if cross-lingual search is needed and return the other language if so.
+
+        Returns the "other" language code if sources in a different language are active,
+        or None if all active sources match the query language.
+        """
+        if not source_origins:
+            return None
+
+        source_langs = set(self.SOURCE_LANGUAGES.get(s, "en") for s in source_origins)
+
+        # If sources include a language different from the query, we need cross-lingual
+        other_langs = source_langs - {query_lang}
+        if other_langs:
+            return other_langs.pop()  # Return the other language ("en" or "el")
+        return None
+
     def retrieve(
         self,
         query: str,
@@ -575,6 +640,7 @@ class HybridRetriever:
         source_origins: Optional[list[str]] = None,
         family_ids: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
+        query_lang: Optional[str] = None,
     ) -> list[SearchResult]:
         """
         Retrieve relevant chunks for a query.
@@ -593,6 +659,7 @@ class HybridRetriever:
             top_k: Number of results (defaults to config)
             use_cache: Whether to check/use semantic result cache
             source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc", "eurlex"])
+            query_lang: Override language for this query ("en" or "el"). If None, uses tenant config.
 
         Returns:
             List of SearchResult objects, ranked by relevance
@@ -600,12 +667,16 @@ class HybridRetriever:
         start_time = time.time()
         top_k = top_k or self.config.final_top_k
 
-        logger.info(f"Retrieving for query: {query[:50]}...")
+        # Per-query language override for prompts and FTS
+        effective_lang = query_lang or self._lang
+        effective_fts = "greek" if effective_lang == "el" else self._language_config.fts_language
+
+        logger.info(f"Retrieving for query ({effective_lang}): {query[:50]}...")
 
         # ============================================================
         # DIRECT PARAGRAPH LOOKUP: Skip full pipeline for paragraph refs
         # ============================================================
-        para_num = self._extract_paragraph_reference(query)
+        para_num = self._extract_paragraph_reference(query, effective_lang)
         if para_num is not None and document_id:
             para_results = self.store.search_by_paragraph(
                 document_id=document_id,
@@ -638,7 +709,7 @@ class HybridRetriever:
         # ============================================================
         # ADVANCED OPTIMIZATION 2: Query classification
         # ============================================================
-        query_type = self._classify_query(query)
+        query_type = self._classify_query(query, effective_lang)
         effective_config = self._get_effective_config(query_type)
 
         # Query Enhancement (based on query classification)
@@ -649,18 +720,23 @@ class HybridRetriever:
         needs_expansion = effective_config.use_query_expansion
         needs_hyde = effective_config.use_hyde
         needs_multi = effective_config.use_multi_query
+        # Check if cross-lingual translation is needed (query lang != source lang)
+        other_lang = self._needs_cross_lingual(effective_lang, source_origins)
+        needs_translate = other_lang is not None and query_type != "simple"
 
-        if any([needs_expansion, needs_hyde, needs_multi]):
+        if any([needs_expansion, needs_hyde, needs_multi, needs_translate]):
             from concurrent.futures import ThreadPoolExecutor
 
             futures = {}
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 if needs_expansion:
-                    futures["expand"] = executor.submit(self._expand_query, query)
+                    futures["expand"] = executor.submit(self._expand_query, query, effective_lang)
                 if needs_hyde:
-                    futures["hyde"] = executor.submit(self._generate_hyde_document, query)
+                    futures["hyde"] = executor.submit(self._generate_hyde_document, query, effective_lang)
                 if needs_multi:
-                    futures["variants"] = executor.submit(self._generate_query_variants, query)
+                    futures["variants"] = executor.submit(self._generate_query_variants, query, effective_lang)
+                if needs_translate:
+                    futures["translate"] = executor.submit(self._translate_query, query, other_lang)
 
             # Collect results
             if "expand" in futures:
@@ -679,6 +755,11 @@ class HybridRetriever:
                 for variant in variants[1:]:
                     if variant not in search_queries:
                         search_queries.append(variant)
+
+            # Store translated query for cross-lingual search stage
+            translated_query = futures["translate"].result() if "translate" in futures else None
+        else:
+            translated_query = None
 
         # Stage 1: Run searches for all queries and embeddings
         all_vector_results = []
@@ -700,13 +781,13 @@ class HybridRetriever:
             )
             all_vector_results.extend(vector_results)
 
-            # Keyword search
+            # Keyword search (use per-query FTS language)
             keyword_results = self.store.keyword_search(
                 query=search_query,
                 top_k=effective_config.keyword_top_k,
                 client_id=client_id,
                 document_id=document_id,
-                fts_language=self._language_config.fts_language,
+                fts_language=effective_fts,
                 source_origins=source_origins,
                 family_ids=family_ids,
                 conversation_id=conversation_id,
@@ -726,6 +807,43 @@ class HybridRetriever:
             )
             all_vector_results.extend(hyde_results)
             logger.debug(f"{name} search returned {len(hyde_results)} results")
+
+        # ============================================================
+        # CROSS-LINGUAL SEARCH: If query language != source language,
+        # translate query and search in the other language too.
+        # e.g. Greek query → translate to English → search HUDOC/EUR-Lex
+        # e.g. English query → translate to Greek → search CyLaw
+        # ============================================================
+        if translated_query:
+            cross_fts = "greek" if other_lang == "el" else "english"
+            logger.info(f"Cross-lingual search ({effective_lang}→{other_lang}): '{translated_query[:60]}'")
+
+            # Vector search with translated query embedding
+            cross_embedding = self.embeddings.embed_query(translated_query)
+            cross_vector = self.store.search(
+                query_embedding=cross_embedding,
+                top_k=effective_config.vector_top_k,
+                client_id=client_id,
+                document_id=document_id,
+                source_origins=source_origins,
+                family_ids=family_ids,
+                conversation_id=conversation_id,
+            )
+            all_vector_results.extend(cross_vector)
+
+            # Keyword search with translated query in the other FTS language
+            cross_keyword = self.store.keyword_search(
+                query=translated_query,
+                top_k=effective_config.keyword_top_k,
+                client_id=client_id,
+                document_id=document_id,
+                fts_language=cross_fts,
+                source_origins=source_origins,
+                family_ids=family_ids,
+                conversation_id=conversation_id,
+            )
+            all_keyword_results.extend(cross_keyword)
+            logger.debug(f"Cross-lingual search: {len(cross_vector)} vector + {len(cross_keyword)} keyword results")
 
         logger.debug(f"Total vector results: {len(all_vector_results)}, keyword results: {len(all_keyword_results)}")
 

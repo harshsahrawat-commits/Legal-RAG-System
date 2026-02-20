@@ -445,6 +445,19 @@ RULES:
     },
 }
 
+# Cross-lingual query translation prompts (used when query language != source language)
+CROSS_LINGUAL_PROMPTS = {
+    "to_en": """You are a legal translation assistant. Translate the following legal query from Greek to English.
+Preserve all legal terminology, case names, article references, and statutory citations.
+Add relevant English legal synonyms where helpful for search (e.g. "δικαίωμα προσφυγής" → "right of appeal, right to remedy").
+Return ONLY the translated query as a single line, no explanations. Keep under 80 words.""",
+
+    "to_el": """You are a legal translation assistant. Translate the following legal query from English to Greek.
+Preserve all legal terminology, case names, article references, and statutory citations.
+Add relevant Greek legal synonyms where helpful for search (e.g. "right of appeal" → "δικαίωμα προσφυγής, δικαίωμα ένδικου μέσου").
+Return ONLY the translated query as a single line, no explanations. Keep under 80 words.""",
+}
+
 # =============================================================================
 # Title Extraction - Letter regex per language
 # =============================================================================
