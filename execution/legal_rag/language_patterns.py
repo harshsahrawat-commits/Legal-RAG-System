@@ -372,16 +372,16 @@ When citing, indicate which database each fact comes from where relevant (e.g. "
 CRITICAL: DO NOT USE ASTERISKS (*) ANYWHERE IN YOUR RESPONSE. NO BOLD. NO MARKDOWN.
 
 FORMAT:
-1. Start with 1-3 sentences directly answering the question with citations [N]
-2. Add a line with just: ---
-3. Then add "Supporting Evidence:" as plain text
-4. Add sub-sections as plain text (e.g., "Plaintiffs Identity:" not "**Plaintiffs Identity**:")
+- Write a comprehensive answer in multiple paragraphs
+- Cite sources inline using [N] notation
+- Each paragraph should flow naturally
+- NO section headers, NO separators (---), NO "Supporting Evidence" section
 
 RULES:
 - NO asterisks (*) - this breaks the UI
 - NO "Answer:" or "Summary:" headers at the start
+- NO "Supporting Evidence:" or "Sources:" sections - sources are shown separately in the UI
 - EVERY claim needs a citation [N]
-- Use --- to separate the answer from evidence
 - Quote exact language in "quotation marks" when relevant
 - If not in sources: "The provided documents do not contain this information."
 - Professional legal prose only""",
@@ -430,16 +430,17 @@ RULES:
 ΚΡΙΣΙΜΟ: ΜΗΝ ΧΡΗΣΙΜΟΠΟΙΕΙΤΕ ΑΣΤΕΡΙΣΚΟΥΣ (*) ΠΟΥΘΕΝΑ. ΧΩΡΙΣ BOLD. ΧΩΡΙΣ MARKDOWN.
 
 ΜΟΡΦΗ:
-1. Ξεκινήστε με 1-3 προτάσεις που απαντούν άμεσα με παραπομπές [N]
-2. Προσθέστε μια γραμμή με μόνο: ---
-3. Μετά προσθέστε "Υποστηρικτικά Στοιχεία:" ως απλό κείμενο
-4. Προσθέστε υπο-ενότητες ως απλό κείμενο
+- Γράψτε μια ολοκληρωμένη απάντηση σε πολλαπλές παραγράφους
+- Παραπέμψτε στις πηγές με σημείωση [N] μέσα στο κείμενο
+- Κάθε παράγραφος πρέπει να ρέει φυσικά
+- ΚΑΜΙΑ επικεφαλίδα ενότητας, ΚΑΝΕΝΑΣ διαχωριστής (---), ΚΑΝΕΝΑ τμήμα "Υποστηρικτικά Στοιχεία"
 
 ΚΑΝΟΝΕΣ:
 - ΚΑΝΕΝΑΣ αστερίσκος (*) - χαλάει το UI
-- ΚΑΜΙΑ επικεφαλίδα "Απάντηση:" στην αρχή
+- ΚΑΜΙΑ επικεφαλίδα "Απάντηση:" ή "Περίληψη:" στην αρχή
+- ΚΑΝΕΝΑ τμήμα "Υποστηρικτικά Στοιχεία:" ή "Πηγές:" - οι πηγές εμφανίζονται ξεχωριστά στο UI
 - ΚΑΘΕ ισχυρισμός χρειάζεται παραπομπή [N]
-- Χρησιμοποιήστε --- για διαχωρισμό
+- Παραθέστε ακριβή γλώσσα σε "εισαγωγικά" όπου είναι σχετικό
 - Αν δεν υπάρχει στις πηγές: "Τα παρεχόμενα έγγραφα δεν περιέχουν αυτή την πληροφορία."
 - Επαγγελματική νομική γλώσσα μόνο""",
     },

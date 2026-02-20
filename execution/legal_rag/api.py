@@ -386,7 +386,7 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
 
         # Fetch document metadata for all unique doc IDs
         doc_ids = list(set(r.document_id for r in results))
-        doc_source_meta = store.get_document_source_meta(doc_ids, client_id=client_id)
+        doc_source_meta = store.get_document_source_meta(doc_ids)
         doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
 
         # Build citations
@@ -407,8 +407,22 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                         or _stem_from_title(meta.get("title")))
                 cylaw_url = generate_cylaw_url(stem)
                 external_url = None
+            elif origin == "hudoc":
+                cylaw_url = None
+                external_url = (
+                    doc_metadata.get("source_url")
+                    or (f"https://hudoc.echr.coe.int/eng?i={doc_metadata['item_id']}"
+                        if doc_metadata.get("item_id") else None)
+                )
+            elif origin == "eurlex":
+                cylaw_url = None
+                external_url = (
+                    doc_metadata.get("source_url")
+                    or (f"https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:{doc_metadata['celex']}"
+                        if doc_metadata.get("celex") else None)
+                )
             else:
-                # HUDOC and EUR-Lex have external_url stored in metadata.source_url
+                # Unknown origin — try source_url as generic fallback
                 cylaw_url = None
                 external_url = doc_metadata.get("source_url")
 

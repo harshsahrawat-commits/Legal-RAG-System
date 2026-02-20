@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SourceInfo, SourceToggles, ChatMessage, UserInfo, Conversation, DocumentFamily } from './types'
+import type { SourceToggles, ChatMessage, UserInfo, Conversation, DocumentFamily } from './types'
 
 interface AppState {
   // Auth (Google OAuth + JWT)
@@ -30,13 +30,6 @@ interface AppState {
   // Document families
   families: DocumentFamily[]
   setFamilies: (families: DocumentFamily[]) => void
-
-  sourcePanelOpen: boolean
-  selectedSourceIndex: number
-  currentSources: SourceInfo[]
-  openSourcePanel: (index: number, sources: SourceInfo[]) => void
-  closeSourcePanel: () => void
-  navigateSource: (direction: 'prev' | 'next') => void
 
   // Settings page visibility
   settingsOpen: boolean
@@ -109,27 +102,6 @@ export const useStore = create<AppState>((set, get) => ({
 
   families: [],
   setFamilies: (families) => set({ families }),
-
-  sourcePanelOpen: false,
-  selectedSourceIndex: 0,
-  currentSources: [],
-
-  openSourcePanel: (index: number, sources: SourceInfo[]) => {
-    set({ sourcePanelOpen: true, selectedSourceIndex: index, currentSources: sources })
-  },
-
-  closeSourcePanel: () => {
-    set({ sourcePanelOpen: false })
-  },
-
-  navigateSource: (direction: 'prev' | 'next') => {
-    const { selectedSourceIndex, currentSources } = get()
-    if (direction === 'prev' && selectedSourceIndex > 0) {
-      set({ selectedSourceIndex: selectedSourceIndex - 1 })
-    } else if (direction === 'next' && selectedSourceIndex < currentSources.length - 1) {
-      set({ selectedSourceIndex: selectedSourceIndex + 1 })
-    }
-  },
 
   settingsOpen: false,
   setSettingsOpen: (open) => set({ settingsOpen: open }),

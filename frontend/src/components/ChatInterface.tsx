@@ -30,8 +30,6 @@ export default function ChatInterface() {
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const closeSourcePanel = useStore((s) => s.closeSourcePanel)
-  const sourcePanelOpen = useStore((s) => s.sourcePanelOpen)
   const anySourceOff = !sourceToggles.cylaw || !sourceToggles.hudoc || !sourceToggles.eurlex || sourceToggles.families.length > 0
 
   // Auto-scroll as new tokens stream in
@@ -126,16 +124,12 @@ export default function ChatInterface() {
   // Global keyboard shortcuts
   const handleGlobalKey = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && sourcePanelOpen) {
-        closeSourcePanel()
-        return
-      }
       if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
         e.preventDefault()
         inputRef.current?.focus()
       }
     },
-    [closeSourcePanel, sourcePanelOpen]
+    []
   )
 
   useEffect(() => {

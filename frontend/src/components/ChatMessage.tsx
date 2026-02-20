@@ -1,10 +1,9 @@
-import { useMemo, useState, useRef, useEffect } from 'react'
-import { User, Bot, Clock, Copy, Check, AlertCircle, FileText } from 'lucide-react'
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
+import { User, Bot, Clock, Copy, Check, AlertCircle, FileText, ExternalLink, ChevronRight } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage as ChatMessageType, SourceInfo } from '../types'
 import { parseCitations } from '../types'
-import { useStore } from '../store'
 
 interface Props {
   message: ChatMessageType
@@ -131,6 +130,269 @@ const badgeStyles: Record<string, React.CSSProperties> = {
   },
 }
 
+function OriginBadge({ origin }: { origin: string }) {
+  const colors = SOURCE_COLORS[origin] || SOURCE_COLORS.cylaw
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '1px 6px',
+      fontSize: 10,
+      fontWeight: 600,
+      borderRadius: 4,
+      background: colors.bg,
+      color: colors.fg,
+      letterSpacing: '0.03em',
+      lineHeight: 1.6,
+      whiteSpace: 'nowrap' as const,
+    }}>
+      {colors.label}
+    </span>
+  )
+}
+
+function RelevanceBar({ score }: { score: number }) {
+  const pct = Math.round(score * 100)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 80 }}>
+      <div style={{
+        flex: 1,
+        height: 4,
+        borderRadius: 2,
+        background: 'var(--bg-3)',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          height: '100%',
+          width: `${pct}%`,
+          borderRadius: 2,
+          background: 'var(--accent, #06b6d4)',
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+      <span style={{
+        fontSize: 11,
+        fontFamily: 'var(--font-mono, monospace)',
+        color: 'var(--text-3)',
+        minWidth: 28,
+        textAlign: 'right' as const,
+      }}>
+        {pct}%
+      </span>
+    </div>
+  )
+}
+
+function getSourceUrl(source: SourceInfo): string | null {
+  if (source.external_url) return source.external_url
+  if (source.cylaw_url) return source.cylaw_url
+  return null
+}
+
+function SourceRow({
+  source,
+  index,
+  isActive,
+  messageId,
+}: {
+  source: SourceInfo
+  index: number
+  isActive: boolean
+  messageId: string
+}) {
+  const [hover, setHover] = useState(false)
+  const origin = source.source_origin || 'cylaw'
+  const url = getSourceUrl(source)
+
+  return (
+    <div
+      id={`source-${messageId}-${index + 1}`}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '28px 1fr auto',
+        gap: 8,
+        alignItems: 'start',
+        padding: '8px 10px',
+        borderRadius: 6,
+        background: isActive ? 'var(--bg-hover, rgba(255,255,255,0.04))' : hover ? 'rgba(255,255,255,0.02)' : 'transparent',
+        border: isActive ? '1px solid var(--glass-border, rgba(255,255,255,0.08))' : '1px solid transparent',
+        transition: 'all 0.15s ease',
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      {/* Col 1: Citation number */}
+      <span style={{
+        fontSize: 12,
+        fontFamily: 'var(--font-mono, monospace)',
+        color: 'var(--text-3)',
+        paddingTop: 1,
+      }}>
+        [{index + 1}]
+      </span>
+
+      {/* Col 2: Title + origin badge + short citation */}
+      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 3, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const }}>
+          {url ? (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                fontSize: 13.5,
+                color: 'var(--text-1)',
+                textDecoration: 'none',
+                lineHeight: 1.3,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap' as const,
+                maxWidth: '100%',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline' }}
+              onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none' }}
+            >
+              {source.section || source.document_title}
+              <ExternalLink size={11} style={{ marginLeft: 4, verticalAlign: 'middle', opacity: 0.5 }} />
+            </a>
+          ) : (
+            <span style={{
+              fontSize: 13.5,
+              color: 'var(--text-1)',
+              lineHeight: 1.3,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap' as const,
+            }}>
+              {source.section || source.document_title}
+            </span>
+          )}
+          <OriginBadge origin={origin} />
+        </div>
+        {source.short_citation && (
+          <span style={{
+            fontSize: 11.5,
+            color: 'var(--text-2)',
+            lineHeight: 1.3,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap' as const,
+          }}>
+            {source.short_citation}
+          </span>
+        )}
+      </div>
+
+      {/* Col 3: Relevance bar + View button */}
+      <div style={{ display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-end', gap: 4, paddingTop: 1 }}>
+        <RelevanceBar score={source.relevance_score} />
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '2px 8px',
+              fontSize: 11,
+              color: 'var(--text-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              textDecoration: 'none',
+              transition: 'all 0.15s ease',
+              whiteSpace: 'nowrap' as const,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--accent)'
+              e.currentTarget.style.color = 'var(--accent)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.color = 'var(--text-2)'
+            }}
+          >
+            View
+            <ExternalLink size={10} />
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function InlineSources({
+  sources,
+  messageId,
+  expanded,
+  onToggle,
+  activeCitation,
+}: {
+  sources: SourceInfo[]
+  messageId: string
+  expanded: boolean
+  onToggle: () => void
+  activeCitation: number | null
+}) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      {/* Toggle header */}
+      <button
+        onClick={onToggle}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 0',
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          color: 'var(--text-3)',
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: 'uppercase' as const,
+          letterSpacing: '0.06em',
+          fontFamily: 'var(--font-mono, monospace)',
+          transition: 'color 0.15s ease',
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-2)' }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)' }}
+      >
+        <ChevronRight
+          size={13}
+          style={{
+            transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            transition: 'transform 0.2s ease',
+          }}
+        />
+        Sources &middot; {sources.length}
+      </button>
+
+      {/* Expanded source list */}
+      {expanded && (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column' as const,
+          gap: 2,
+          paddingTop: 4,
+          animation: 'fadeIn 0.2s ease',
+        }}>
+          {sources.map((source, i) => (
+            <SourceRow
+              key={source.chunk_id || i}
+              source={source}
+              index={i}
+              isActive={activeCitation === i + 1}
+              messageId={messageId}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const THINKING_MESSAGES = [
   'Searching through legal documents\u2026',
   'Analyzing relevant sections\u2026',
@@ -239,9 +501,10 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
 }
 
 export default function ChatMessage({ message, isStreaming = false }: Props) {
-  const openSourcePanel = useStore((s) => s.openSourcePanel)
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
+  const [sourcesExpanded, setSourcesExpanded] = useState(false)
+  const [activeCitation, setActiveCitation] = useState<number | null>(null)
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content).then(() => {
@@ -250,14 +513,13 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
     })
   }
 
-  // Smooth transition: thinking → streaming content
+  // Smooth transition: thinking -> streaming content
   const [isFadingOut, setIsFadingOut] = useState(false)
   const wasThinkingRef = useRef(true)
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   useEffect(() => {
     if (isStreaming && wasThinkingRef.current && message.content !== '') {
-      // First token arrived — fade out thinking, then show content
       wasThinkingRef.current = false
       setIsFadingOut(true)
       fadeTimerRef.current = setTimeout(() => setIsFadingOut(false), 150)
@@ -267,7 +529,6 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
     }
   }, [isStreaming, message.content])
 
-  // Cleanup only on unmount — not on every token
   useEffect(() => {
     return () => {
       if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
@@ -285,16 +546,22 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
     return message.sources && num >= 1 && num <= message.sources.length
   }
 
-  const handleCitationClick = (num: number) => {
-    if (isValidCitation(num)) {
-      openSourcePanel(num - 1, message.sources!)
-    }
-  }
+  const handleCitationClick = useCallback((num: number) => {
+    if (!message.sources || num < 1 || num > message.sources.length) return
+    setActiveCitation(num)
+    setSourcesExpanded(true)
+    // Scroll to the source row after DOM update
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`source-${message.id}-${num}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+    })
+  }, [message.sources, message.id])
 
   const renderAssistantContent = () => {
     if (!parts) return null
 
-    // Phase 1 & 2: Thinking indicator with smooth fade-out when content arrives
     if (showThinkingUI) {
       return (
         <div style={{
@@ -311,11 +578,9 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
 
     if (message.content === '') return null
 
-    // Check if the content has any markdown formatting
     const hasMarkdown = /(\*\*.+?\*\*|__.+?__|#{1,3}\s|```.+?```|^\s*[-*]\s|\|.+\|)/ms.test(message.content)
 
     if (!hasMarkdown) {
-      // Plain text with citations
       return (
         <div style={styles.text}>
           {parts.map((part, i) =>
@@ -335,7 +600,6 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
       )
     }
 
-    // Markdown content: render text segments as markdown, keep citation badges inline
     return (
       <div style={styles.markdown}>
         {parts.map((part, i) =>
@@ -357,6 +621,8 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
     )
   }
 
+  const hasSources = !isUser && !showThinkingUI && message.sources && message.sources.length > 0
+
   return (
     <div style={{ ...styles.row, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
       {!isUser && (
@@ -364,41 +630,58 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
           <Bot size={16} />
         </div>
       )}
-      <div
-        style={{
-          ...styles.bubble,
-          background: message.isError ? 'var(--danger-dim, rgba(239,68,68,0.12))' : isUser ? 'var(--bg-3)' : 'var(--bg-2)',
-          borderBottomRightRadius: isUser ? 4 : 'var(--radius-md)',
-          borderBottomLeftRadius: isUser ? 'var(--radius-md)' : 4,
-          maxWidth: isUser ? '70%' : '80%',
-        }}
-      >
-        {isUser ? (
-          <p style={styles.text}>{message.content}</p>
-        ) : message.isError ? (
-          <div style={{ ...styles.text, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-            <AlertCircle size={16} color="var(--danger)" style={{ flexShrink: 0, marginTop: 2 }} />
-            <span>{message.content}</span>
-          </div>
-        ) : (
-          renderAssistantContent()
-        )}
-        {!isUser && !showThinkingUI && (
-          <div style={styles.meta}>
-            {message.latency_ms != null && (
-              <>
-                <Clock size={12} />
-                <span>{(message.latency_ms / 1000).toFixed(1)}s</span>
-              </>
-            )}
-            {message.sources && message.sources.length > 0 && (
-              <span>{message.latency_ms != null && <>&middot; </>}{message.sources.length} source{message.sources.length > 1 ? 's' : ''}</span>
-            )}
-            {!message.isError && (
-              <button onClick={handleCopy} style={styles.copyBtn} title="Copy answer">
-                {copied ? <Check size={12} color="var(--success)" /> : <Copy size={12} />}
-              </button>
-            )}
+      <div style={{ maxWidth: isUser ? '70%' : '80%', display: 'flex', flexDirection: 'column' as const }}>
+        <div
+          style={{
+            ...styles.bubble,
+            background: message.isError ? 'var(--danger-dim, rgba(239,68,68,0.12))' : isUser ? 'var(--bg-3)' : 'var(--bg-2)',
+            borderBottomRightRadius: isUser ? 4 : 'var(--radius-md)',
+            borderBottomLeftRadius: isUser ? 'var(--radius-md)' : 4,
+          }}
+        >
+          {isUser ? (
+            <p style={styles.text}>{message.content}</p>
+          ) : message.isError ? (
+            <div style={{ ...styles.text, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <AlertCircle size={16} color="var(--danger)" style={{ flexShrink: 0, marginTop: 2 }} />
+              <span>{message.content}</span>
+            </div>
+          ) : (
+            renderAssistantContent()
+          )}
+          {!isUser && !showThinkingUI && (
+            <div style={styles.meta}>
+              {message.latency_ms != null && (
+                <>
+                  <Clock size={12} />
+                  <span>{(message.latency_ms / 1000).toFixed(1)}s</span>
+                </>
+              )}
+              {message.sources && message.sources.length > 0 && (
+                <span>{message.latency_ms != null && <>&middot; </>}{message.sources.length} source{message.sources.length > 1 ? 's' : ''}</span>
+              )}
+              {!message.isError && (
+                <button onClick={handleCopy} style={styles.copyBtn} title="Copy answer">
+                  {copied ? <Check size={12} color="var(--success)" /> : <Copy size={12} />}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Inline collapsible sources */}
+        {hasSources && (
+          <div style={{ paddingLeft: 4 }}>
+            <InlineSources
+              sources={message.sources!}
+              messageId={message.id}
+              expanded={sourcesExpanded}
+              onToggle={() => {
+                setSourcesExpanded(!sourcesExpanded)
+                if (sourcesExpanded) setActiveCitation(null)
+              }}
+              activeCitation={activeCitation}
+            />
           </div>
         )}
       </div>
