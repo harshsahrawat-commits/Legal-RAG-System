@@ -22,7 +22,6 @@ export default function ChatInterface() {
   const sourceToggles = useStore((s) => s.sourceToggles)
   const activeConversationId = useStore((s) => s.activeConversationId)
   const setActiveConversationId = useStore((s) => s.setActiveConversationId)
-  const conversations = useStore((s) => s.conversations)
   const setConversations = useStore((s) => s.setConversations)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
