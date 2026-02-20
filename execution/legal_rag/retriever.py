@@ -724,9 +724,9 @@ class HybridRetriever:
         other_lang = self._needs_cross_lingual(effective_lang, source_origins)
         needs_translate = other_lang is not None and query_type != "simple"
 
-        if any([needs_expansion, needs_hyde, needs_multi, needs_translate]):
-            from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        if any([needs_expansion, needs_hyde, needs_multi, needs_translate]):
             futures = {}
             with ThreadPoolExecutor(max_workers=4) as executor:
                 if needs_expansion:
@@ -756,94 +756,98 @@ class HybridRetriever:
                     if variant not in search_queries:
                         search_queries.append(variant)
 
-            # Store translated query for cross-lingual search stage
             translated_query = futures["translate"].result() if "translate" in futures else None
         else:
             translated_query = None
 
-        # Stage 1: Run searches for all queries and embeddings
+        # Cap search queries to avoid excessive DB calls (original + 2 best)
+        if len(search_queries) > 3:
+            search_queries = search_queries[:3]
+
+        # ============================================================
+        # Stage 1: PARALLEL search — embed all queries, then run all
+        # vector + keyword searches concurrently via ThreadPoolExecutor.
+        # This replaces the old sequential loop that was the #1 bottleneck.
+        # ============================================================
         all_vector_results = []
         all_keyword_results = []
 
-        # Search with query embeddings (reuse original_embedding for first query)
-        for i, search_query in enumerate(search_queries):
-            query_embedding = original_embedding if (i == 0 and search_query == query) else self.embeddings.embed_query(search_query)
+        # 1a. Batch-compute embeddings for all search queries
+        query_embeddings = []
+        for i, sq in enumerate(search_queries):
+            if i == 0 and sq == query:
+                query_embeddings.append(original_embedding)
+            else:
+                query_embeddings.append(self.embeddings.embed_query(sq))
 
+        # Reduced top_k for variant queries (they add diversity, not depth)
+        variant_top_k = max(effective_config.vector_top_k // 2, 15)
+
+        # 1b. Build search tasks: (type, callable) pairs
+        search_common = dict(
+            client_id=client_id,
+            document_id=document_id,
+            source_origins=source_origins,
+            family_ids=family_ids,
+            conversation_id=conversation_id,
+        )
+
+        search_tasks = []  # (result_type, callable)
+
+        for i, (sq, emb) in enumerate(zip(search_queries, query_embeddings)):
+            tk = effective_config.vector_top_k if i == 0 else variant_top_k
             # Vector search
-            vector_results = self.store.search(
-                query_embedding=query_embedding,
-                top_k=effective_config.vector_top_k,
-                client_id=client_id,
-                document_id=document_id,
-                source_origins=source_origins,
-                family_ids=family_ids,
-                conversation_id=conversation_id,
-            )
-            all_vector_results.extend(vector_results)
+            search_tasks.append(("vector", lambda e=emb, t=tk: self.store.search(
+                query_embedding=e, top_k=t, **search_common,
+            )))
+            # Keyword search
+            search_tasks.append(("keyword", lambda q=sq, t=tk: self.store.keyword_search(
+                query=q, top_k=t, fts_language=effective_fts, **search_common,
+            )))
 
-            # Keyword search (use per-query FTS language)
-            keyword_results = self.store.keyword_search(
-                query=search_query,
-                top_k=effective_config.keyword_top_k,
-                client_id=client_id,
-                document_id=document_id,
-                fts_language=effective_fts,
-                source_origins=source_origins,
-                family_ids=family_ids,
-                conversation_id=conversation_id,
-            )
-            all_keyword_results.extend(keyword_results)
-
-        # Search with HyDE embeddings (vector only, no keyword)
+        # HyDE vector searches
         for name, hyde_emb in search_embeddings:
-            hyde_results = self.store.search(
-                query_embedding=hyde_emb,
-                top_k=effective_config.vector_top_k,
-                client_id=client_id,
-                document_id=document_id,
-                source_origins=source_origins,
-                family_ids=family_ids,
-                conversation_id=conversation_id,
-            )
-            all_vector_results.extend(hyde_results)
-            logger.debug(f"{name} search returned {len(hyde_results)} results")
+            search_tasks.append(("vector", lambda e=hyde_emb: self.store.search(
+                query_embedding=e, top_k=variant_top_k, **search_common,
+            )))
 
-        # ============================================================
-        # CROSS-LINGUAL SEARCH: If query language != source language,
-        # translate query and search in the other language too.
-        # e.g. Greek query → translate to English → search HUDOC/EUR-Lex
-        # e.g. English query → translate to Greek → search CyLaw
-        # ============================================================
+        # Cross-lingual searches: only target sources matching the OTHER language
         if translated_query:
             cross_fts = "greek" if other_lang == "el" else "english"
-            logger.info(f"Cross-lingual search ({effective_lang}→{other_lang}): '{translated_query[:60]}'")
+            cross_sources = [s for s in (source_origins or [])
+                            if self.SOURCE_LANGUAGES.get(s, "en") == other_lang]
+            if cross_sources:
+                logger.info(f"Cross-lingual search ({effective_lang}->{other_lang}): '{translated_query[:60]}' sources={cross_sources}")
+                cross_common = dict(
+                    client_id=client_id,
+                    document_id=document_id,
+                    source_origins=cross_sources,
+                    family_ids=family_ids,
+                    conversation_id=conversation_id,
+                )
+                cross_embedding = self.embeddings.embed_query(translated_query)
+                search_tasks.append(("vector", lambda e=cross_embedding: self.store.search(
+                    query_embedding=e, top_k=variant_top_k, **cross_common,
+                )))
+                search_tasks.append(("keyword", lambda q=translated_query, f=cross_fts: self.store.keyword_search(
+                    query=q, top_k=variant_top_k, fts_language=f, **cross_common,
+                )))
 
-            # Vector search with translated query embedding
-            cross_embedding = self.embeddings.embed_query(translated_query)
-            cross_vector = self.store.search(
-                query_embedding=cross_embedding,
-                top_k=effective_config.vector_top_k,
-                client_id=client_id,
-                document_id=document_id,
-                source_origins=source_origins,
-                family_ids=family_ids,
-                conversation_id=conversation_id,
-            )
-            all_vector_results.extend(cross_vector)
-
-            # Keyword search with translated query in the other FTS language
-            cross_keyword = self.store.keyword_search(
-                query=translated_query,
-                top_k=effective_config.keyword_top_k,
-                client_id=client_id,
-                document_id=document_id,
-                fts_language=cross_fts,
-                source_origins=source_origins,
-                family_ids=family_ids,
-                conversation_id=conversation_id,
-            )
-            all_keyword_results.extend(cross_keyword)
-            logger.debug(f"Cross-lingual search: {len(cross_vector)} vector + {len(cross_keyword)} keyword results")
+        # 1c. Execute all search tasks in parallel
+        # Cap workers at 6 to stay within Neon Postgres connection limits
+        logger.info(f"Running {len(search_tasks)} search tasks in parallel")
+        with ThreadPoolExecutor(max_workers=min(len(search_tasks), 6)) as executor:
+            future_map = {executor.submit(fn): rtype for rtype, fn in search_tasks}
+            for future in as_completed(future_map):
+                rtype = future_map[future]
+                try:
+                    results = future.result()
+                    if rtype == "vector":
+                        all_vector_results.extend(results)
+                    else:
+                        all_keyword_results.extend(results)
+                except Exception as e:
+                    logger.warning(f"Search task ({rtype}) failed: {e}")
 
         logger.debug(f"Total vector results: {len(all_vector_results)}, keyword results: {len(all_keyword_results)}")
 
