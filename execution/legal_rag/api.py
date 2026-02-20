@@ -878,6 +878,15 @@ async def query_documents_stream(
     def generate():
         nonlocal conversation_id
 
+        try:
+            yield from _generate_inner()
+        except Exception as e:
+            logger.error(f"Stream generator crashed: {type(e).__name__}: {e}", exc_info=True)
+            yield _sse_event("error", f"Server error: {type(e).__name__}: {e}")
+
+    def _generate_inner():
+        nonlocal conversation_id
+
         # Auto-create conversation if JWT user sends without conversation_id
         if not conversation_id and client.get("auth_method") == "jwt":
             try:
