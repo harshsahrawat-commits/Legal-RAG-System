@@ -454,13 +454,39 @@ def _build_context_string(cited_contents, sources_list):
     """Build LLM context string with origin labels from cited contents + sources.
 
     Returns the context string for the LLM prompt.
+    Uses plain text formatting (no markdown) to avoid the LLM mirroring markdown in its output.
     """
     context_parts = []
     for idx, (cc, src) in enumerate(zip(cited_contents, sources_list), 1):
         label = _ORIGIN_LABELS.get(src.source_origin, src.source_origin)
-        context_parts.append(f"**[{idx}]** ({label}) {cc.citation.short_format()}:\n{cc.content}")
+        context_parts.append(f"[{idx}] ({label}) {cc.citation.short_format()}:\n{cc.content}")
 
-    return "\n\n---\n\n".join(context_parts)
+    return "\n\n".join(context_parts)
+
+
+import re as _re
+
+def _clean_answer(text: str) -> str:
+    """Post-process LLM answer to strip markdown formatting the model may have added.
+
+    Removes bold/italic asterisks, numbered list prefixes, markdown headers,
+    and horizontal rules while preserving [N] citation brackets.
+    """
+    # Remove bold: **text** -> text
+    text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    # Remove italic: *text* -> text (but not inside citations like [1])
+    text = _re.sub(r'(?<!\[)\*(.+?)\*(?!\])', r'\1', text)
+    # Remove markdown headers: ### Header -> Header
+    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)
+    # Remove numbered list prefixes: "1. **Title**:" or "1. Title:" -> "Title:"
+    text = _re.sub(r'^\d+\.\s+', '', text, flags=_re.MULTILINE)
+    # Remove horizontal rules
+    text = _re.sub(r'^-{3,}$', '', text, flags=_re.MULTILINE)
+    # Clean up any leftover stray asterisks
+    text = text.replace('*', '')
+    # Collapse triple+ newlines to double
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 # =============================================================================
@@ -745,12 +771,12 @@ async def query_documents(
             model=lang_config.llm_model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nProvide a clear, well-cited answer."},
+                {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
             ],
             max_tokens=3500,
             temperature=0.2,
         )
-        answer = response.choices[0].message.content
+        answer = _clean_answer(response.choices[0].message.content or "")
 
     except Exception as e:
         from openai import APITimeoutError
@@ -940,7 +966,7 @@ async def query_documents_stream(
                 model=lang_config.llm_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nProvide a clear, well-cited answer."},
+                    {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
                 ],
                 max_tokens=3500,
                 temperature=0.2,
@@ -950,6 +976,8 @@ async def query_documents_stream(
             for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     token = chunk.choices[0].delta.content
+                    # Strip stray asterisks from streamed tokens
+                    token = token.replace('*', '')
                     full_answer += token
                     yield _sse_event("token", token)
 

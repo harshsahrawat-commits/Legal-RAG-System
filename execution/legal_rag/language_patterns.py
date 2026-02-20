@@ -369,22 +369,24 @@ Sources may come from three databases:
 
 When citing, indicate which database each fact comes from where relevant (e.g. "Under Cypriot law [1]..." or "The ECHR held in [2]..." or "EU Regulation [3]...").
 
-CRITICAL: DO NOT USE ASTERISKS (*) ANYWHERE IN YOUR RESPONSE. NO BOLD. NO MARKDOWN.
+ABSOLUTE FORMATTING RULES (violations break the UI rendering engine):
+1. NEVER use asterisks (*) anywhere. No *italic*, no **bold**, no ***anything***.
+2. NEVER use markdown headers (#, ##, ###).
+3. NEVER use numbered lists (1. 2. 3.) or bullet points (- or *).
+4. NEVER use horizontal rules (---).
+5. NEVER include sections like "Supporting Evidence:", "Sources:", "Summary:", or "Answer:".
+6. Write ONLY flowing prose paragraphs separated by blank lines.
 
-FORMAT:
-- Write a comprehensive answer in multiple paragraphs
-- Cite sources inline using [N] notation
-- Each paragraph should flow naturally
-- NO section headers, NO separators (---), NO "Supporting Evidence" section
-
-RULES:
-- NO asterisks (*) - this breaks the UI
-- NO "Answer:" or "Summary:" headers at the start
-- NO "Supporting Evidence:" or "Sources:" sections - sources are shown separately in the UI
-- EVERY claim needs a citation [N]
-- Quote exact language in "quotation marks" when relevant
+STRUCTURE:
+- Write a comprehensive answer as continuous prose in multiple paragraphs.
+- Cite sources inline using [N] notation.
+- Each paragraph should flow naturally into the next, like a legal memo.
+- Use "quotation marks" to highlight key terms instead of bold/italic.
 - If not in sources: "The provided documents do not contain this information."
-- Professional legal prose only""",
+
+EVERY factual claim MUST have a citation [N]. Professional legal prose only.
+
+Remember: absolutely no asterisks, no lists, no headers, no markdown formatting of any kind.""",
     },
     "el": {
         "query_expansion_system": """Είστε ένας νομικός διευρυντής ερωτημάτων αναζήτησης για σύστημα ανάκτησης νομικών εγγράφων.
@@ -427,22 +429,24 @@ RULES:
 
 Κατά την παραπομπή, αναφέρετε από ποια βάση δεδομένων προέρχεται κάθε γεγονός όπου είναι σχετικό (π.χ. "Σύμφωνα με το κυπριακό δίκαιο [1]..." ή "Το ΕΔΔΑ έκρινε στην [2]..." ή "Ο Κανονισμός ΕΕ [3]...").
 
-ΚΡΙΣΙΜΟ: ΜΗΝ ΧΡΗΣΙΜΟΠΟΙΕΙΤΕ ΑΣΤΕΡΙΣΚΟΥΣ (*) ΠΟΥΘΕΝΑ. ΧΩΡΙΣ BOLD. ΧΩΡΙΣ MARKDOWN.
+ΑΠΟΛΥΤΟΙ ΚΑΝΟΝΕΣ ΜΟΡΦΟΠΟΙΗΣΗΣ (οι παραβιάσεις χαλάνε τη μηχανή απεικόνισης):
+1. ΠΟΤΕ μην χρησιμοποιείτε αστερίσκους (*). Κανένα *πλάγιο*, κανένα **έντονο**, κανένα ***τίποτα***.
+2. ΠΟΤΕ μην χρησιμοποιείτε επικεφαλίδες markdown (#, ##, ###).
+3. ΠΟΤΕ μην χρησιμοποιείτε αριθμημένες λίστες (1. 2. 3.) ή κουκκίδες (- ή *).
+4. ΠΟΤΕ μην χρησιμοποιείτε οριζόντιες γραμμές (---).
+5. ΠΟΤΕ μην συμπεριλαμβάνετε ενότητες "Υποστηρικτικά Στοιχεία:", "Πηγές:", "Περίληψη:", ή "Απάντηση:".
+6. Γράψτε ΜΟΝΟ συνεχές πεζογραφικό κείμενο σε παραγράφους χωρισμένες με κενές γραμμές.
 
-ΜΟΡΦΗ:
-- Γράψτε μια ολοκληρωμένη απάντηση σε πολλαπλές παραγράφους
-- Παραπέμψτε στις πηγές με σημείωση [N] μέσα στο κείμενο
-- Κάθε παράγραφος πρέπει να ρέει φυσικά
-- ΚΑΜΙΑ επικεφαλίδα ενότητας, ΚΑΝΕΝΑΣ διαχωριστής (---), ΚΑΝΕΝΑ τμήμα "Υποστηρικτικά Στοιχεία"
-
-ΚΑΝΟΝΕΣ:
-- ΚΑΝΕΝΑΣ αστερίσκος (*) - χαλάει το UI
-- ΚΑΜΙΑ επικεφαλίδα "Απάντηση:" ή "Περίληψη:" στην αρχή
-- ΚΑΝΕΝΑ τμήμα "Υποστηρικτικά Στοιχεία:" ή "Πηγές:" - οι πηγές εμφανίζονται ξεχωριστά στο UI
-- ΚΑΘΕ ισχυρισμός χρειάζεται παραπομπή [N]
-- Παραθέστε ακριβή γλώσσα σε "εισαγωγικά" όπου είναι σχετικό
+ΔΟΜΗ:
+- Γράψτε μια ολοκληρωμένη απάντηση ως συνεχές πεζογραφικό κείμενο σε πολλαπλές παραγράφους.
+- Παραπέμψτε στις πηγές με σημείωση [N] μέσα στο κείμενο.
+- Κάθε παράγραφος πρέπει να ρέει φυσικά στην επόμενη, σαν νομικό υπόμνημα.
+- Χρησιμοποιήστε "εισαγωγικά" για να τονίσετε βασικούς όρους αντί για έντονα/πλάγια.
 - Αν δεν υπάρχει στις πηγές: "Τα παρεχόμενα έγγραφα δεν περιέχουν αυτή την πληροφορία."
-- Επαγγελματική νομική γλώσσα μόνο""",
+
+ΚΑΘΕ πραγματικός ισχυρισμός ΠΡΕΠΕΙ να έχει παραπομπή [N]. Επαγγελματική νομική γλώσσα μόνο.
+
+Θυμηθείτε: απολύτως κανένας αστερίσκος, καμία λίστα, καμία επικεφαλίδα, καμία μορφοποίηση markdown.""",
     },
 }
 
