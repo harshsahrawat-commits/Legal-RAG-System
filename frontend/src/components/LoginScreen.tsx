@@ -32,14 +32,14 @@ export default function LoginScreen() {
     <div style={styles.container}>
       <div style={styles.card}>
         <div style={styles.logo}>
-          <Scale size={32} color="var(--accent)" style={{ filter: 'drop-shadow(0 0 12px var(--accent-glow))' }} />
+          <Scale size={32} color="var(--accent)" />
           <h1 style={styles.title}>Legal RAG</h1>
         </div>
         <p style={styles.subtitle}>AI-powered legal document analysis with precise citations</p>
 
         {loading ? (
           <div style={styles.loadingWrap}>
-            <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
+            <Loader2 size={24} color="var(--accent)" style={{ animation: 'spin 1s linear infinite' }} />
             <span style={{ color: 'var(--text-2)', fontSize: 14 }}>Signing in...</span>
           </div>
         ) : (
@@ -47,7 +47,7 @@ export default function LoginScreen() {
             <GoogleLogin
               onSuccess={handleGoogleSuccess}
               onError={() => setError('Google sign-in failed. Please try again.')}
-              theme="filled_black"
+              theme="outline"
               size="large"
               width="320"
               text="continue_with"
@@ -74,13 +74,11 @@ const styles: Record<string, React.CSSProperties> = {
   card: {
     width: '100%',
     maxWidth: 400,
-    padding: 40,
-    background: 'var(--glass-bg)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
+    padding: 48,
+    background: '#FFFFFF',
     borderRadius: 'var(--radius-lg)',
-    border: '1px solid var(--glass-border)',
-    boxShadow: '0 10px 40px rgba(0, 0, 0, 0.6), 0 0 60px var(--accent-glow)',
+    border: '1px solid var(--border)',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.06)',
     textAlign: 'center' as const,
   },
   logo: {
@@ -91,9 +89,10 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
   },
   title: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: 700,
     letterSpacing: '-0.02em',
+    color: 'var(--text-1)',
   },
   subtitle: {
     color: 'var(--text-2)',
@@ -119,7 +118,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   footer: {
     marginTop: 24,
-    fontSize: 12,
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
     color: 'var(--text-3)',
   },
 }

@@ -3,9 +3,9 @@ import { useStore } from '../store'
 import type { SourceToggles } from '../types'
 
 const SOURCE_CONFIG: { key: keyof Omit<SourceToggles, 'families'>; label: string; sublabel: string; color: string }[] = [
-  { key: 'cylaw', label: 'CyLaw Documents', sublabel: 'Cyprus Law', color: '#00f0ff' },
-  { key: 'hudoc', label: 'HUDOC (ECHR)', sublabel: 'European Court of Human Rights', color: '#8b5cf6' },
-  { key: 'eurlex', label: 'EUR-Lex (EU Law)', sublabel: 'EU legislation & regulations', color: '#f59e0b' },
+  { key: 'cylaw', label: 'CyLaw Documents', sublabel: 'Cyprus Law', color: 'var(--badge-cylaw-fg, #3A5A8C)' },
+  { key: 'hudoc', label: 'HUDOC (ECHR)', sublabel: 'European Court of Human Rights', color: 'var(--badge-echr-fg, #0A7B6E)' },
+  { key: 'eurlex', label: 'EUR-Lex (EU Law)', sublabel: 'EU legislation & regulations', color: 'var(--badge-eurlex-fg, #8C7A3A)' },
 ]
 
 interface Props {
@@ -57,7 +57,7 @@ export default function SourceTogglePopover({ open, onClose }: Props) {
           <button
             style={{
               ...styles.toggle,
-              background: sourceToggles[key] ? color : 'var(--bg-3)',
+              background: sourceToggles[key] ? 'var(--accent)' : '#D0D0CC',
             }}
             onClick={(e) => {
               e.stopPropagation()
@@ -87,7 +87,7 @@ export default function SourceTogglePopover({ open, onClose }: Props) {
               <div key={fam.id} style={styles.row} onClick={() => setFamilyToggle(fam.id, !isOn)}>
                 <div style={styles.labelGroup}>
                   <div style={styles.labelRow}>
-                    <span style={{ ...styles.dot, background: '#10b981' }} />
+                    <span style={{ ...styles.dot, background: 'var(--accent)' }} />
                     <span style={styles.label}>{fam.name}</span>
                   </div>
                   <span style={styles.sublabel}>{fam.document_count} document{fam.document_count !== 1 ? 's' : ''}</span>
@@ -95,7 +95,7 @@ export default function SourceTogglePopover({ open, onClose }: Props) {
                 <button
                   style={{
                     ...styles.toggle,
-                    background: isOn ? '#10b981' : 'var(--bg-3)',
+                    background: isOn ? 'var(--accent)' : '#D0D0CC',
                   }}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -128,28 +128,27 @@ const styles: Record<string, React.CSSProperties> = {
     right: 0,
     marginBottom: 8,
     width: 280,
-    background: 'var(--glass-bg)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
-    border: '1px solid var(--glass-border)',
+    background: '#FFFFFF',
+    border: '1px solid var(--border)',
     borderRadius: 'var(--radius-md, 8px)',
-    boxShadow: 'var(--shadow-lg, 0 4px 12px rgba(0,0,0,0.3))',
+    boxShadow: 'var(--shadow-lg)',
     zIndex: 100,
     overflow: 'hidden',
     animation: 'fadeIn 0.15s ease',
   },
   header: {
     padding: '10px 14px',
-    fontSize: 12,
-    fontWeight: 600,
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    fontWeight: 500,
     textTransform: 'uppercase' as const,
-    letterSpacing: '0.05em',
-    color: 'var(--text-3)',
-    borderBottom: '1px solid var(--glass-border)',
+    letterSpacing: '2px',
+    color: 'var(--accent)',
+    borderBottom: '1px solid var(--border)',
   },
   divider: {
     height: 1,
-    background: 'var(--glass-border)',
+    background: 'var(--border)',
     margin: '4px 0',
   },
   row: {
@@ -207,6 +206,6 @@ const styles: Record<string, React.CSSProperties> = {
     top: 2,
     left: 2,
     transition: 'transform 0.2s',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
   },
 }

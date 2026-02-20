@@ -170,7 +170,7 @@ export default function ChatInterface() {
       <div ref={listRef} style={styles.messageList}>
         {messages.length === 0 && (
           <div style={styles.empty}>
-            <MessageSquare size={48} color="var(--bg-3)" />
+            <MessageSquare size={48} color="var(--border)" />
             <h2 style={styles.emptyTitle}>Ask about legal documents</h2>
             <p style={styles.emptyText}>
               Search across Cyprus Law, ECHR case law, and EU legislation. Answers include precise citations you can click to view the source.
@@ -323,11 +323,11 @@ const styles: Record<string, React.CSSProperties> = {
   emptyTitle: {
     fontSize: 20,
     fontWeight: 600,
-    color: 'var(--text-2)',
+    color: 'var(--text-1)',
   },
   emptyText: {
     fontSize: 14,
-    color: 'var(--text-3)',
+    color: 'var(--text-2)',
     maxWidth: 400,
     lineHeight: 1.6,
   },
@@ -356,8 +356,8 @@ const styles: Record<string, React.CSSProperties> = {
   suggestionBtn: {
     padding: '8px 14px',
     fontSize: 13,
-    color: 'var(--text-2)',
-    background: 'var(--bg-2)',
+    color: 'var(--text-1)',
+    background: '#FFFFFF',
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius-md, 8px)',
     cursor: 'pointer',
@@ -396,20 +396,18 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'flex-end',
     gap: 10,
     padding: '16px 24px',
-    borderTop: '1px solid var(--glass-border)',
-    background: 'var(--glass-bg)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
+    borderTop: '1px solid var(--border)',
+    background: '#FFFFFF',
     flexShrink: 0,
   },
   textarea: {
     flex: 1,
     resize: 'none',
-    padding: '12px 16px',
+    padding: '14px 18px',
     fontSize: 14,
     lineHeight: 1.5,
-    background: 'var(--bg-2)',
-    border: '1px solid var(--border)',
+    background: '#FFFFFF',
+    border: '1.5px solid var(--border-hover)',
     borderRadius: 'var(--radius-md)',
     color: 'var(--text-1)',
     outline: 'none',
@@ -425,8 +423,8 @@ const styles: Record<string, React.CSSProperties> = {
     height: 40,
     borderRadius: 'var(--radius-md)',
     background: 'transparent',
-    color: 'var(--text-2)',
-    border: '1px solid var(--border)',
+    color: 'var(--text-3)',
+    border: 'none',
     cursor: 'pointer',
     flexShrink: 0,
     transition: 'all var(--transition)',
@@ -440,17 +438,17 @@ const styles: Record<string, React.CSSProperties> = {
     height: 7,
     borderRadius: '50%',
     background: '#f59e0b',
-    border: '1.5px solid var(--bg-1)',
+    border: '1.5px solid #FFFFFF',
   },
   sendBtn: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: 44,
-    height: 44,
-    borderRadius: 'var(--radius-md)',
+    width: 40,
+    height: 40,
+    borderRadius: 'var(--radius-sm)',
     background: 'var(--accent)',
-    color: '#000',
+    color: '#FFFFFF',
     border: 'none',
     cursor: 'pointer',
     flexShrink: 0,
@@ -458,6 +456,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   charCount: {
     textAlign: 'right' as const,
+    fontFamily: 'var(--font-mono)',
     fontSize: 11,
     color: 'var(--text-3)',
     padding: '0 24px 4px',

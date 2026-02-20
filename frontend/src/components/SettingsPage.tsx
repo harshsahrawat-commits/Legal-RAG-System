@@ -220,12 +220,18 @@ export default function SettingsPage() {
                   <span style={styles.toggleLabel}>{SOURCE_LABELS[key].label}</span>
                   <span style={styles.toggleDesc}>{SOURCE_LABELS[key].desc}</span>
                 </div>
-                <input
-                  type="checkbox"
-                  checked={sourceToggles[key]}
-                  onChange={(e) => setSourceToggle(key, e.target.checked)}
-                  style={styles.checkbox}
-                />
+                <button
+                  style={{
+                    ...styles.toggleSwitch,
+                    background: sourceToggles[key] ? 'var(--accent)' : '#D0D0CC',
+                  }}
+                  onClick={(e) => { e.preventDefault(); setSourceToggle(key, !sourceToggles[key]) }}
+                >
+                  <span style={{
+                    ...styles.toggleSwitchDot,
+                    transform: sourceToggles[key] ? 'translateX(16px)' : 'translateX(0)',
+                  }} />
+                </button>
               </label>
             ))}
           </div>
@@ -289,7 +295,7 @@ export default function SettingsPage() {
                     <button
                       style={{
                         ...styles.activeToggle,
-                        background: fam.is_active ? '#10b981' : 'var(--bg-3)',
+                        background: fam.is_active ? 'var(--accent)' : '#D0D0CC',
                       }}
                       onClick={() => handleToggleFamilyActive(fam)}
                       title={fam.is_active ? 'Deactivate' : 'Activate'}
@@ -354,7 +360,7 @@ export default function SettingsPage() {
           >
             {uploading ? (
               <>
-                <Loader2 size={24} style={{ animation: 'spin 1s linear infinite' }} />
+                <Loader2 size={24} color="var(--accent)" style={{ animation: 'spin 1s linear infinite' }} />
                 <span style={styles.dropText}>Uploading... {uploadProgress}%</span>
               </>
             ) : (
@@ -469,8 +475,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-    fontSize: 14,
-    color: 'var(--text-2)',
+    fontSize: 13,
+    fontWeight: 500,
+    color: 'var(--accent)',
     background: 'none',
     border: 'none',
     cursor: 'pointer',
@@ -478,33 +485,33 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 24,
   },
   pageTitle: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 700,
     marginBottom: 32,
+    color: 'var(--text-1)',
   },
   section: {
     marginBottom: 32,
   },
   sectionTitle: {
-    fontSize: 14,
-    fontWeight: 600,
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    fontWeight: 500,
     textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    color: 'var(--text-3)',
+    letterSpacing: '2px',
+    color: 'var(--accent)',
     marginBottom: 12,
   },
   sectionDesc: {
     fontSize: 13,
-    color: 'var(--text-3)',
+    color: 'var(--text-2)',
     marginBottom: 12,
   },
   card: {
-    background: 'var(--glass-bg)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
-    border: '1px solid var(--glass-border)',
-    borderRadius: 'var(--radius-md)',
-    padding: '16px',
+    background: '#FFFFFF',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    padding: '20px',
   },
   accountRow: {
     display: 'flex',
@@ -537,18 +544,19 @@ const styles: Record<string, React.CSSProperties> = {
   accountName: {
     fontSize: 15,
     fontWeight: 600,
+    color: 'var(--text-1)',
   },
   accountEmail: {
     fontSize: 13,
     color: 'var(--text-2)',
   },
   signOutBtn: {
-    padding: '8px 16px',
+    padding: '8px 20px',
     fontSize: 13,
     fontWeight: 500,
     color: 'var(--danger)',
-    background: 'none',
-    border: '1px solid var(--danger)',
+    background: 'transparent',
+    border: '1.5px solid var(--danger)',
     borderRadius: 'var(--radius-sm)',
     cursor: 'pointer',
     flexShrink: 0,
@@ -557,9 +565,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '10px 0',
+    padding: '12px 0',
     cursor: 'pointer',
-    borderBottom: '1px solid var(--border)',
+    borderBottom: '1px solid #F0F0ED',
   },
   toggleInfo: {
     display: 'flex',
@@ -568,17 +576,35 @@ const styles: Record<string, React.CSSProperties> = {
   },
   toggleLabel: {
     fontSize: 14,
-    fontWeight: 500,
+    fontWeight: 600,
+    color: 'var(--text-1)',
   },
   toggleDesc: {
-    fontSize: 12,
-    color: 'var(--text-3)',
+    fontSize: 12.5,
+    color: 'var(--text-2)',
   },
-  checkbox: {
-    width: 18,
-    height: 18,
-    accentColor: 'var(--accent)',
+  toggleSwitch: {
+    width: 36,
+    height: 20,
+    borderRadius: 10,
+    border: 'none',
     cursor: 'pointer',
+    position: 'relative' as const,
+    flexShrink: 0,
+    transition: 'background 0.2s',
+    padding: 0,
+  },
+  toggleSwitchDot: {
+    display: 'block',
+    width: 16,
+    height: 16,
+    borderRadius: '50%',
+    background: '#fff',
+    position: 'absolute' as const,
+    top: 2,
+    left: 2,
+    transition: 'transform 0.2s',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
   },
 
   // Family management
@@ -589,10 +615,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   createInput: {
     flex: 1,
-    padding: '8px 12px',
+    padding: '10px 14px',
     fontSize: 13,
-    background: 'var(--bg-2)',
-    border: '1px solid var(--border)',
+    background: '#FFFFFF',
+    border: '1.5px dashed var(--border-hover)',
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-1)',
     outline: 'none',
@@ -606,7 +632,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: 36,
     borderRadius: 'var(--radius-sm)',
     background: 'var(--accent)',
-    color: '#000',
+    color: '#FFFFFF',
     border: 'none',
     cursor: 'pointer',
     flexShrink: 0,
@@ -622,8 +648,8 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     padding: '8px 12px',
-    background: 'var(--glass-bg)',
-    border: '1px solid var(--glass-border)',
+    background: '#FFFFFF',
+    border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm)',
   },
   familyRenameRow: {
@@ -639,11 +665,12 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+    color: 'var(--text-1)',
   },
   familyCount: {
     fontSize: 11,
     color: 'var(--text-3)',
-    background: 'var(--bg-2)',
+    background: '#F0F0ED',
     padding: '2px 6px',
     borderRadius: 10,
     flexShrink: 0,
@@ -669,14 +696,14 @@ const styles: Record<string, React.CSSProperties> = {
     top: 2,
     left: 2,
     transition: 'transform 0.2s',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
   },
   renameInput: {
     flex: 1,
     padding: '4px 8px',
     fontSize: 13,
-    background: 'var(--bg-2)',
-    border: '1px solid var(--border)',
+    background: '#FFFFFF',
+    border: '1px solid var(--border-hover)',
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-1)',
     outline: 'none',
@@ -704,8 +731,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     padding: '8px 12px',
     fontSize: 13,
-    background: 'var(--bg-2)',
-    border: '1px solid var(--border)',
+    background: '#FFFFFF',
+    border: '1.5px solid var(--border-hover)',
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-1)',
     outline: 'none',
@@ -717,9 +744,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    padding: 24,
-    border: '2px dashed var(--glass-border)',
-    borderRadius: 'var(--radius-md)',
+    padding: 40,
+    border: '2px dashed var(--border-hover)',
+    borderRadius: 10,
+    background: 'var(--bg-0)',
     cursor: 'pointer',
     transition: 'all var(--transition)',
     marginBottom: 12,
@@ -747,10 +775,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
+    fontFamily: 'var(--font-mono)',
     fontSize: 11,
-    fontWeight: 600,
+    fontWeight: 500,
     textTransform: 'uppercase',
-    letterSpacing: '0.05em',
+    letterSpacing: '1.5px',
     color: 'var(--text-3)',
     padding: '10px 4px 4px',
   },
@@ -759,8 +788,8 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     padding: '8px 12px',
-    background: 'var(--glass-bg)',
-    border: '1px solid var(--glass-border)',
+    background: '#FFFFFF',
+    border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm)',
   },
   docTitle: {
@@ -770,8 +799,10 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+    color: 'var(--text-1)',
   },
   docMeta: {
+    fontFamily: 'var(--font-mono)',
     fontSize: 12,
     color: 'var(--text-3)',
     flexShrink: 0,
@@ -779,7 +810,7 @@ const styles: Record<string, React.CSSProperties> = {
   moveSelect: {
     padding: '4px 8px',
     fontSize: 11,
-    background: 'var(--bg-2)',
+    background: '#FFFFFF',
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm)',
     color: 'var(--text-2)',

@@ -11,9 +11,9 @@ interface Props {
 }
 
 const SOURCE_COLORS: Record<string, { bg: string; fg: string; label: string }> = {
-  cylaw: { bg: 'rgba(6,182,212,0.15)', fg: '#06b6d4', label: 'CyLaw' },
-  hudoc: { bg: 'rgba(139,92,246,0.15)', fg: '#8b5cf6', label: 'ECHR' },
-  eurlex: { bg: 'rgba(245,158,11,0.15)', fg: '#f59e0b', label: 'EU Law' },
+  cylaw: { bg: 'var(--badge-cylaw-bg, #EBF0F7)', fg: 'var(--badge-cylaw-fg, #3A5A8C)', label: 'CyLaw' },
+  hudoc: { bg: 'var(--badge-echr-bg, #E6F5F2)', fg: 'var(--badge-echr-fg, #0A7B6E)', label: 'ECHR' },
+  eurlex: { bg: 'var(--badge-eurlex-bg, #F5F0E6)', fg: 'var(--badge-eurlex-fg, #8C7A3A)', label: 'EU Law' },
 }
 
 function CitationBadge({
@@ -46,8 +46,9 @@ function CitationBadge({
       ref={ref}
       style={{
         ...badgeStyles.badge,
-        background: valid ? colors.bg : 'var(--bg-3)',
-        color: valid ? colors.fg : 'var(--text-3)',
+        background: valid ? '#E6F5F2' : '#F0F0ED',
+        color: valid ? '#0A9B8A' : 'var(--text-3)',
+        border: valid ? '1px solid #C5E5DF' : '1px solid var(--border)',
         cursor: valid ? 'pointer' : 'not-allowed',
         position: 'relative',
       }}
@@ -67,10 +68,10 @@ function CitationBadge({
             ...(tooltipPos === 'below' ? { top: '100%', bottom: 'auto', marginTop: 6 } : {}),
           }}
         >
-          <span style={{ display: 'block', fontSize: 10, fontWeight: 600, color: colors.fg, marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
+          <span style={{ display: 'block', fontSize: 10, fontWeight: 600, color: colors.fg, marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: '0.05em', fontFamily: 'var(--font-mono)' }}>
             {colors.label}
           </span>
-          <strong style={{ display: 'block', marginBottom: 4 }}>
+          <strong style={{ display: 'block', marginBottom: 4, color: 'var(--text-1)' }}>
             {source.section || source.document_title}
           </strong>
           <span
@@ -97,12 +98,13 @@ const badgeStyles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     minWidth: 22,
     height: 20,
-    padding: '0 6px',
+    padding: '1px 5px',
     fontSize: 11,
-    fontWeight: 700,
-    borderRadius: 10,
+    fontWeight: 500,
+    fontFamily: 'var(--font-mono)',
+    borderRadius: 4,
     transition: 'all var(--transition)',
-    verticalAlign: 'middle',
+    verticalAlign: 'super',
     marginInline: 2,
     userSelect: 'none' as const,
     gap: 3,
@@ -115,10 +117,10 @@ const badgeStyles: Record<string, React.CSSProperties> = {
     marginBottom: 6,
     width: 260,
     padding: '10px 12px',
-    background: 'var(--bg-1)',
+    background: '#FFFFFF',
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius-sm, 6px)',
-    boxShadow: 'var(--shadow-lg, 0 4px 12px rgba(0,0,0,0.3))',
+    boxShadow: 'var(--shadow-lg)',
     fontSize: 12,
     fontWeight: 400,
     color: 'var(--text-1)',
@@ -136,15 +138,17 @@ function OriginBadge({ origin }: { origin: string }) {
     <span style={{
       display: 'inline-flex',
       alignItems: 'center',
-      padding: '1px 6px',
+      padding: '3px 8px',
       fontSize: 10,
-      fontWeight: 600,
+      fontWeight: 500,
+      fontFamily: 'var(--font-mono)',
       borderRadius: 4,
       background: colors.bg,
       color: colors.fg,
-      letterSpacing: '0.03em',
-      lineHeight: 1.6,
+      letterSpacing: '0.5px',
+      lineHeight: 1,
       whiteSpace: 'nowrap' as const,
+      textTransform: 'uppercase' as const,
     }}>
       {colors.label}
     </span>
@@ -153,26 +157,27 @@ function OriginBadge({ origin }: { origin: string }) {
 
 function RelevanceBar({ score }: { score: number }) {
   const pct = Math.round(score * 100)
+  const barColor = pct >= 80 ? '#0A9B8A' : pct >= 60 ? '#5AADA3' : '#A0CCC6'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 80 }}>
       <div style={{
         flex: 1,
-        height: 4,
+        height: 3,
         borderRadius: 2,
-        background: 'var(--bg-3)',
+        background: '#E8E8E5',
         overflow: 'hidden',
       }}>
         <div style={{
           height: '100%',
           width: `${pct}%`,
           borderRadius: 2,
-          background: 'var(--accent, #06b6d4)',
+          background: barColor,
           transition: 'width 0.3s ease',
         }} />
       </div>
       <span style={{
-        fontSize: 11,
-        fontFamily: 'var(--font-mono, monospace)',
+        fontSize: 10.5,
+        fontFamily: 'var(--font-mono)',
         color: 'var(--text-3)',
         minWidth: 28,
         textAlign: 'right' as const,
@@ -209,13 +214,14 @@ function SourceRow({
       id={`source-${messageId}-${index + 1}`}
       style={{
         display: 'grid',
-        gridTemplateColumns: '28px 1fr auto',
+        gridTemplateColumns: '40px 1fr auto',
         gap: 8,
         alignItems: 'start',
-        padding: '8px 10px',
+        padding: '14px 16px',
         borderRadius: 6,
-        background: isActive ? 'var(--bg-hover, rgba(255,255,255,0.04))' : hover ? 'rgba(255,255,255,0.02)' : 'transparent',
-        border: isActive ? '1px solid var(--glass-border, rgba(255,255,255,0.08))' : '1px solid transparent',
+        background: isActive ? '#E6F5F2' : hover ? '#FFFFFF' : 'transparent',
+        borderLeft: isActive ? '3px solid #0A9B8A' : '3px solid transparent',
+        borderBottom: '1px solid #EAEAE7',
         transition: 'all 0.15s ease',
       }}
       onMouseEnter={() => setHover(true)}
@@ -224,15 +230,15 @@ function SourceRow({
       {/* Col 1: Citation number */}
       <span style={{
         fontSize: 12,
-        fontFamily: 'var(--font-mono, monospace)',
-        color: 'var(--text-3)',
+        fontFamily: 'var(--font-mono)',
+        color: isActive ? '#0A9B8A' : 'var(--text-3)',
         paddingTop: 1,
       }}>
         [{index + 1}]
       </span>
 
       {/* Col 2: Title + origin badge + short citation */}
-      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 3, minWidth: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const }}>
           {url ? (
             <a
@@ -240,26 +246,28 @@ function SourceRow({
               target="_blank"
               rel="noopener noreferrer"
               style={{
-                fontSize: 13.5,
+                fontSize: 14,
+                fontWeight: 600,
                 color: 'var(--text-1)',
                 textDecoration: 'none',
-                lineHeight: 1.3,
+                lineHeight: 1.4,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap' as const,
                 maxWidth: '100%',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline' }}
-              onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--accent)'; e.currentTarget.style.textDecoration = 'underline' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-1)'; e.currentTarget.style.textDecoration = 'none' }}
             >
               {source.section || source.document_title}
-              <ExternalLink size={11} style={{ marginLeft: 4, verticalAlign: 'middle', opacity: 0.5 }} />
+              <ExternalLink size={10} style={{ marginLeft: 4, verticalAlign: 'middle', opacity: 0.4 }} />
             </a>
           ) : (
             <span style={{
-              fontSize: 13.5,
+              fontSize: 14,
+              fontWeight: 600,
               color: 'var(--text-1)',
-              lineHeight: 1.3,
+              lineHeight: 1.4,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap' as const,
@@ -271,9 +279,9 @@ function SourceRow({
         </div>
         {source.short_citation && (
           <span style={{
-            fontSize: 11.5,
+            fontSize: 12.5,
             color: 'var(--text-2)',
-            lineHeight: 1.3,
+            lineHeight: 1.4,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap' as const,
@@ -284,7 +292,7 @@ function SourceRow({
       </div>
 
       {/* Col 3: Relevance bar + View button */}
-      <div style={{ display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-end', gap: 4, paddingTop: 1 }}>
+      <div style={{ display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-end', gap: 6, paddingTop: 1 }}>
         <RelevanceBar score={source.relevance_score} />
         {url && (
           <a
@@ -295,26 +303,31 @@ function SourceRow({
               display: 'inline-flex',
               alignItems: 'center',
               gap: 4,
-              padding: '2px 8px',
-              fontSize: 11,
-              color: 'var(--text-2)',
+              padding: '4px 10px',
+              fontSize: 10.5,
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 500,
+              color: 'var(--accent)',
+              background: '#FFFFFF',
               border: '1px solid var(--border)',
-              borderRadius: 10,
+              borderRadius: 4,
               textDecoration: 'none',
+              textTransform: 'uppercase' as const,
+              letterSpacing: '0.5px',
               transition: 'all 0.15s ease',
               whiteSpace: 'nowrap' as const,
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'var(--accent)'
-              e.currentTarget.style.color = 'var(--accent)'
+              e.currentTarget.style.background = '#E6F5F2'
+              e.currentTarget.style.borderColor = '#C5E5DF'
             }}
             onMouseLeave={(e) => {
+              e.currentTarget.style.background = '#FFFFFF'
               e.currentTarget.style.borderColor = 'var(--border)'
-              e.currentTarget.style.color = 'var(--text-2)'
             }}
           >
             View
-            <ExternalLink size={10} />
+            <ExternalLink size={9} />
           </a>
         )}
       </div>
@@ -336,7 +349,7 @@ function InlineSources({
   activeCitation: number | null
 }) {
   return (
-    <div style={{ marginTop: 6 }}>
+    <div style={{ marginTop: 8 }}>
       {/* Toggle header */}
       <button
         onClick={onToggle}
@@ -348,16 +361,14 @@ function InlineSources({
           background: 'none',
           border: 'none',
           cursor: 'pointer',
-          color: 'var(--text-3)',
+          color: 'var(--accent)',
           fontSize: 11,
-          fontWeight: 600,
+          fontWeight: 500,
           textTransform: 'uppercase' as const,
-          letterSpacing: '0.06em',
-          fontFamily: 'var(--font-mono, monospace)',
+          letterSpacing: '2px',
+          fontFamily: 'var(--font-mono)',
           transition: 'color 0.15s ease',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-2)' }}
-        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)' }}
       >
         <ChevronRight
           size={13}
@@ -374,8 +385,11 @@ function InlineSources({
         <div style={{
           display: 'flex',
           flexDirection: 'column' as const,
-          gap: 2,
+          gap: 0,
           paddingTop: 4,
+          background: '#F7F7F5',
+          borderRadius: 8,
+          padding: 16,
           animation: 'fadeIn 0.2s ease',
         }}>
           {sources.map((source, i) => (
@@ -466,13 +480,13 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: '#2dd4bf',
+    background: '#0A9B8A',
     animation: 'pulseDot 1.5s ease-in-out infinite',
     flexShrink: 0,
   },
   statusText: {
     fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: 'var(--text-3)',
     transition: 'opacity 0.5s ease',
   },
   skeletonGroup: {
@@ -483,7 +497,7 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
   skeletonLine: {
     height: 14,
     borderRadius: 4,
-    background: 'linear-gradient(90deg, #1e1e1e 25%, #333333 50%, #1e1e1e 75%)',
+    background: 'linear-gradient(90deg, #E8E8E5 25%, #D8D8D5 50%, #E8E8E5 75%)',
     backgroundSize: '200% 100%',
   },
   sourcesBadge: {
@@ -634,13 +648,24 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
         <div
           style={{
             ...styles.bubble,
-            background: message.isError ? 'var(--danger-dim, rgba(239,68,68,0.12))' : isUser ? 'var(--bg-3)' : 'var(--bg-2)',
-            borderBottomRightRadius: isUser ? 4 : 'var(--radius-md)',
-            borderBottomLeftRadius: isUser ? 'var(--radius-md)' : 4,
+            ...(message.isError ? {
+              background: 'var(--danger-dim)',
+              border: '1px solid rgba(217,75,75,0.2)',
+            } : isUser ? {
+              background: 'var(--accent)',
+              color: '#FFFFFF',
+              borderRadius: '16px 16px 4px 16px',
+            } : {
+              background: '#FFFFFF',
+              border: '1px solid var(--border)',
+              borderLeft: '3px solid var(--accent)',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.03)',
+              borderRadius: 12,
+            }),
           }}
         >
           {isUser ? (
-            <p style={styles.text}>{message.content}</p>
+            <p style={{ ...styles.text, color: '#FFFFFF', fontWeight: 500, fontSize: 14.5 }}>{message.content}</p>
           ) : message.isError ? (
             <div style={{ ...styles.text, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
               <AlertCircle size={16} color="var(--danger)" style={{ flexShrink: 0, marginTop: 2 }} />
@@ -686,7 +711,7 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
         )}
       </div>
       {isUser && (
-        <div style={{ ...styles.avatar, background: 'var(--bg-3)' }}>
+        <div style={{ ...styles.avatar, background: 'var(--accent-dim)', color: 'var(--accent)' }}>
           <User size={16} />
         </div>
       )}
@@ -728,7 +753,7 @@ const markdownComponents = {
       return (
         <pre
           style={{
-            background: 'var(--bg-3)',
+            background: '#F3F3F0',
             padding: 12,
             borderRadius: 'var(--radius-sm, 6px)',
             fontSize: 13,
@@ -743,7 +768,7 @@ const markdownComponents = {
     return (
       <code
         style={{
-          background: 'var(--bg-3)',
+          background: '#F3F3F0',
           padding: '1px 5px',
           borderRadius: 3,
           fontSize: 13,
@@ -777,7 +802,7 @@ const markdownComponents = {
         padding: '6px 10px',
         textAlign: 'left',
         fontWeight: 600,
-        background: 'var(--bg-3)',
+        background: '#F0F0ED',
       }}
     >
       {children}
@@ -794,6 +819,9 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'flex-end',
     gap: 10,
     padding: '4px 24px',
+    maxWidth: 820,
+    margin: '0 auto',
+    width: '100%',
   },
   avatar: {
     width: 32,
@@ -807,33 +835,36 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   bubble: {
-    padding: '14px 20px',
+    padding: '28px 32px',
     borderRadius: 'var(--radius-md)',
-    lineHeight: 1.8,
+    lineHeight: 1.78,
   },
   text: {
-    fontSize: 14.5,
+    fontSize: 15.5,
     whiteSpace: 'pre-wrap' as const,
     wordBreak: 'break-word' as const,
     margin: 0,
-    lineHeight: 1.8,
+    lineHeight: 1.78,
     letterSpacing: '0.01em',
-    wordSpacing: '0.5px',
+    color: 'var(--text-1)',
   },
   markdown: {
-    fontSize: 14.5,
+    fontSize: 15.5,
     wordBreak: 'break-word' as const,
     margin: 0,
-    lineHeight: 1.8,
+    lineHeight: 1.78,
     letterSpacing: '0.01em',
-    wordSpacing: '0.5px',
+    color: 'var(--text-1)',
   },
   meta: {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    marginTop: 8,
-    fontSize: 12,
+    marginTop: 16,
+    paddingTop: 12,
+    borderTop: '1px solid #F0F0ED',
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11.5,
     color: 'var(--text-3)',
   },
   copyBtn: {

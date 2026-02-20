@@ -4,7 +4,7 @@ export default function Header() {
   return (
     <header style={styles.header}>
       <div style={styles.left}>
-        <Scale size={20} color="var(--accent)" style={{ filter: 'drop-shadow(0 0 8px var(--accent-glow))' }} />
+        <Scale size={20} color="var(--accent)" />
         <span style={styles.brand}>Legal RAG</span>
       </div>
     </header>
@@ -17,10 +17,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '12px 24px',
-    borderBottom: '1px solid var(--glass-border)',
-    background: 'var(--glass-bg)',
-    backdropFilter: 'blur(16px)',
-    WebkitBackdropFilter: 'blur(16px)',
+    height: 56,
+    borderBottom: '1px solid var(--border)',
+    background: '#FFFFFF',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
     flexShrink: 0,
   },
   left: {
@@ -29,8 +29,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
   },
   brand: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: 700,
     letterSpacing: '-0.01em',
+    color: 'var(--text-1)',
   },
 }

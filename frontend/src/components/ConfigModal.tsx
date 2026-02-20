@@ -122,7 +122,7 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
     inset: 0,
-    background: 'rgba(0,0,0,0.6)',
+    background: 'rgba(0,0,0,0.3)',
     zIndex: 1000,
   },
   modal: {
@@ -210,7 +210,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 8,
     padding: '10px 20px',
     background: 'var(--accent)',
-    color: '#000',
+    color: '#FFFFFF',
     fontWeight: 600,
     fontSize: 14,
     borderRadius: 'var(--radius-sm)',
