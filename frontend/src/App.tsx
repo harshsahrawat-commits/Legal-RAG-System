@@ -1,6 +1,6 @@
 import { GoogleOAuthProvider } from '@react-oauth/google'
 import { useStore } from './store'
-import LoginScreen from './components/LoginScreen'
+import LandingPage from './components/LandingPage'
 import MainLayout from './components/MainLayout'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
@@ -10,7 +10,7 @@ export default function App() {
 
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      {isAuthenticated ? <MainLayout /> : <LoginScreen />}
+      {isAuthenticated ? <MainLayout /> : <LandingPage />}
     </GoogleOAuthProvider>
   )
 }

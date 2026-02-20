@@ -238,6 +238,38 @@ class VectorStore:
         except (psycopg2.InterfaceError, psycopg2.OperationalError):
             pass
 
+    def _execute_with_retry(self, operation, label="db_operation"):
+        """Execute a DB operation with one retry on stale connection.
+
+        Args:
+            operation: Callable(conn) that performs the DB work and returns a result.
+            label: Human-readable name for logging.
+
+        Returns:
+            Whatever ``operation`` returns.
+        """
+        for attempt in range(2):
+            conn = self._ensure_connection()
+            try:
+                result = operation(conn)
+                self._release_connection(conn)
+                return result
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                self._safe_rollback(conn)
+                try:
+                    self._release_connection(conn)
+                except Exception:
+                    pass
+                if attempt == 0:
+                    logger.warning(f"{label}: stale conn, reconnecting: {e}")
+                    self.connect()
+                    continue
+                raise
+            except Exception:
+                self._safe_rollback(conn)
+                self._release_connection(conn)
+                raise
+
     def close(self) -> None:
         """Close database connection(s)."""
         if self._pool:
@@ -497,45 +529,30 @@ class VectorStore:
         RETURNING client_id, tier, name
         """
 
-        for attempt in range(2):
-            conn = self._ensure_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(sql, (key_hash,))
-                    row = cur.fetchone()
-                    conn.commit()
+        def _op(conn):
+            with conn.cursor() as cur:
+                cur.execute(sql, (key_hash,))
+                row = cur.fetchone()
+                conn.commit()
+            if row:
+                if isinstance(row, dict):
+                    return {
+                        "client_id": str(row["client_id"]),
+                        "tier": row["tier"],
+                        "name": row["name"]
+                    }
+                return {
+                    "client_id": str(row[0]),
+                    "tier": row[1],
+                    "name": row[2]
+                }
+            return None
 
-                self._release_connection(conn)
-
-                if row:
-                    # Handle both RealDictRow and tuple
-                    if isinstance(row, dict):
-                        return {
-                            "client_id": str(row["client_id"]),
-                            "tier": row["tier"],
-                            "name": row["name"]
-                        }
-                    else:
-                        return {
-                            "client_id": str(row[0]),
-                            "tier": row[1],
-                            "name": row[2]
-                        }
-                return None
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-                logger.warning(f"API key validation connection error (attempt {attempt+1}): {e}")
-                try:
-                    self._release_connection(conn)
-                except Exception:
-                    pass
-                if attempt == 0:
-                    self.connect()  # Force reconnect and retry
-                    continue
-                return None
-            except Exception as e:
-                logger.error(f"API key validation failed: {e}")
-                self._release_connection(conn)
-                return None
+        try:
+            return self._execute_with_retry(_op, "validate_api_key")
+        except Exception as e:
+            logger.error(f"API key validation failed: {e}")
+            return None
 
     def log_audit(
         self,
@@ -562,8 +579,7 @@ class VectorStore:
         VALUES (%s::uuid, %s, %s, %s::uuid, %s, %s::inet)
         """
 
-        conn = self._ensure_connection()
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (
                     client_id,
@@ -574,11 +590,12 @@ class VectorStore:
                     ip_address
                 ))
                 conn.commit()
+
+        try:
+            self._execute_with_retry(_op, "log_audit")
         except Exception as e:
             # Don't fail operations due to audit logging errors
             logger.warning(f"Audit logging failed: {e}")
-        finally:
-            self._release_connection(conn)
 
     def initialize_schema(self) -> None:
         """Create tables and indexes if they don't exist."""
@@ -822,8 +839,6 @@ class VectorStore:
         user_id: Optional[str] = None,
     ) -> None:
         """Insert a document record."""
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO legal_documents
             (id, client_id, title, document_type, jurisdiction, file_path, page_count, metadata,
@@ -839,7 +854,7 @@ class VectorStore:
             family_id = EXCLUDED.family_id
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (
                     document_id,
@@ -856,12 +871,8 @@ class VectorStore:
                     user_id,
                 ))
                 conn.commit()
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"Document insert failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        self._execute_with_retry(_op, "insert_document")
 
     def insert_chunks(
         self,
@@ -881,8 +892,6 @@ class VectorStore:
             source_origin: Source origin label ("cylaw", "hudoc", "eurlex", "user", "session")
             family_id: Optional family UUID to assign chunks to
         """
-        conn = self._ensure_connection()
-
         if len(chunks) != len(embeddings):
             raise ValueError(
                 f"Mismatch: {len(chunks)} chunks, {len(embeddings)} embeddings"
@@ -910,7 +919,6 @@ class VectorStore:
             family_id = EXCLUDED.family_id
         """
 
-        # Prepare all values as a list of tuples
         values = []
         for chunk, embedding in zip(chunks, embeddings):
             values.append((
@@ -938,9 +946,8 @@ class VectorStore:
                 family_id,
             ))
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
-                # Use execute_values with template for proper type casting
                 execute_values(
                     cur,
                     sql,
@@ -950,12 +957,8 @@ class VectorStore:
                 )
                 conn.commit()
             logger.info(f"Batch inserted {len(chunks)} chunks (source_origin={source_origin})")
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"Chunk insert failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        self._execute_with_retry(_op, "insert_chunks")
 
     def insert_chunks_with_conn(
         self,
@@ -1107,8 +1110,6 @@ class VectorStore:
         Returns:
             List of SearchResult objects
         """
-        conn = self._ensure_connection()
-
         # Build query with optional filters
         # Public corpus client_id: all CyLaw/HUDOC/EUR-Lex docs were ingested with this ID
         CORPUS_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
@@ -1184,7 +1185,7 @@ class VectorStore:
         # Build params in order: score calc embedding, filters, order embedding, limit
         final_params = [query_embedding] + filter_params + [query_embedding, top_k]
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 # Tune HNSW search: lower ef_search for faster queries
                 # Default is 40; 25 gives ~98.5% recall at ~94K vectors with ~2x speedup
@@ -1221,11 +1222,7 @@ class VectorStore:
 
             return results
 
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+        return self._execute_with_retry(_op, "search")
 
     def keyword_search(
         self,
@@ -1262,8 +1259,6 @@ class VectorStore:
         # Public corpus client_id: all CyLaw/HUDOC/EUR-Lex docs were ingested with this ID
         CORPUS_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
         PUBLIC_SOURCES = {"cylaw", "hudoc", "eurlex"}
-
-        conn = self._ensure_connection()
 
         filter_params = []
         where_extra = ""
@@ -1329,14 +1324,13 @@ class VectorStore:
 
         params = [fts_language, fts_language, query, fts_language, fts_language, query] + filter_params + [top_k]
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
 
             results = []
             for row in rows:
-                # Handle both RealDictRow and tuple
                 if hasattr(row, 'keys'):
                     row_dict = dict(row)
                 else:
@@ -1356,11 +1350,7 @@ class VectorStore:
                 ))
             return results
 
-        except Exception as e:
-            logger.error(f"Keyword search failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+        return self._execute_with_retry(_op, "keyword_search")
 
     def search_by_paragraph(
         self,
@@ -1379,19 +1369,13 @@ class VectorStore:
         Returns:
             List of SearchResult objects containing that paragraph
         """
-        conn = self._ensure_connection()
-
         filters = ["document_id = %s::uuid"]
-        params = [document_id, paragraph_number, paragraph_number]
 
         if client_id:
             filters.append("client_id = %s::uuid")
-            params.insert(0, client_id)
-            params.append(client_id)  # For the second query part
 
         where_clause = " AND ".join(filters)
 
-        # Search both in the array and in the range
         sql = f"""
         SELECT
             id as chunk_id,
@@ -1414,7 +1398,6 @@ class VectorStore:
         ORDER BY paragraph_start ASC NULLS LAST
         """
 
-        # Adjust params order
         final_params = [document_id]
         if client_id:
             final_params.append(client_id)
@@ -1425,14 +1408,14 @@ class VectorStore:
             "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
             "level", "score"
         ]
-        try:
+
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, final_params)
                 rows = cur.fetchall()
 
             results = []
             for row in rows:
-                # Handle both RealDictRow and tuple
                 if hasattr(row, 'keys'):
                     row_dict = dict(row)
                 else:
@@ -1452,11 +1435,7 @@ class VectorStore:
                 ))
             return results
 
-        except Exception as e:
-            logger.error(f"Paragraph search failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+        return self._execute_with_retry(_op, "search_by_paragraph")
 
     def migrate_add_paragraph_columns(self) -> bool:
         """
@@ -1564,8 +1543,6 @@ class VectorStore:
         Returns:
             True if a document was deleted, False if not found (or wrong tenant)
         """
-        conn = self._ensure_connection()
-
         if client_id:
             sql = "DELETE FROM legal_documents WHERE id = %s::uuid AND client_id = %s::uuid"
             params = (document_id, client_id)
@@ -1573,7 +1550,7 @@ class VectorStore:
             sql = "DELETE FROM legal_documents WHERE id = %s::uuid"
             params = (document_id,)
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 deleted = cur.rowcount > 0
@@ -1583,12 +1560,8 @@ class VectorStore:
             else:
                 logger.warning(f"Document {document_id} not found (or wrong tenant)")
             return deleted
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"Document deletion failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "delete_document")
 
     def get_document_titles(
         self,
@@ -1608,8 +1581,6 @@ class VectorStore:
         if not document_ids:
             return {}
 
-        conn = self._ensure_connection()
-
         placeholders = ",".join(["%s::uuid"] * len(document_ids))
         sql = f"SELECT id, title FROM legal_documents WHERE id IN ({placeholders})"
         params = list(document_ids)
@@ -1618,7 +1589,7 @@ class VectorStore:
             sql += " AND client_id = %s::uuid"
             params.append(client_id)
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
@@ -1631,11 +1602,11 @@ class VectorStore:
                     result[str(row[0])] = row[1]
             return result
 
+        try:
+            return self._execute_with_retry(_op, "get_document_titles")
         except Exception as e:
             logger.error(f"Failed to get document titles: {e}")
             return {}
-        finally:
-            self._release_connection(conn)
 
     def get_document_source_meta(
         self,
@@ -1650,8 +1621,6 @@ class VectorStore:
         if not document_ids:
             return {}
 
-        conn = self._ensure_connection()
-
         placeholders = ",".join(["%s::uuid"] * len(document_ids))
         sql = f"SELECT id, title, file_path, metadata FROM legal_documents WHERE id IN ({placeholders})"
         params = list(document_ids)
@@ -1660,7 +1629,7 @@ class VectorStore:
             sql += " AND client_id = %s::uuid"
             params.append(client_id)
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
@@ -1681,31 +1650,26 @@ class VectorStore:
                     }
             return result
 
+        try:
+            return self._execute_with_retry(_op, "get_document_source_meta")
         except Exception as e:
             logger.error(f"Failed to get document source meta: {e}")
             return {}
-        finally:
-            self._release_connection(conn)
 
     def get_document_chunks(self, document_id: str) -> list[dict]:
         """Get all chunks for a document."""
-        conn = self._ensure_connection()
-
         sql = f"""
         SELECT * FROM {self.config.table_name}
         WHERE document_id = %s::uuid
         ORDER BY level, hierarchy_path
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (document_id,))
                 return cur.fetchall()
-        except Exception as e:
-            logger.error(f"Failed to get chunks: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "get_document_chunks")
 
     def list_documents(self, client_id: Optional[str] = None, exclude_session: bool = True) -> list[dict]:
         """
@@ -1718,8 +1682,6 @@ class VectorStore:
         Returns:
             List of document dictionaries with id, title, type, family_id, etc.
         """
-        conn = self._ensure_connection()
-
         columns = ["id", "title", "document_type", "jurisdiction", "page_count",
                    "metadata", "created_at", "file_path", "family_id"]
         sql = f"""
@@ -1737,11 +1699,10 @@ class VectorStore:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY created_at DESC"
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, params if params else None)
                 rows = cur.fetchall()
-            # Handle both RealDictRow and tuple
             result = []
             for row in rows:
                 if hasattr(row, 'keys'):
@@ -1749,11 +1710,8 @@ class VectorStore:
                 else:
                     result.append(dict(zip(columns, row)))
             return result
-        except Exception as e:
-            logger.error(f"Failed to list documents: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "list_documents")
 
     # =========================================================================
     # Tenant Language Configuration
@@ -1798,8 +1756,6 @@ class VectorStore:
         Returns:
             TenantLanguageConfig if found, None otherwise
         """
-        conn = self._ensure_connection()
-
         sql = """
         SELECT language, embedding_model, embedding_provider,
                llm_model, reranker_model
@@ -1807,7 +1763,7 @@ class VectorStore:
         WHERE client_id = %s::uuid
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (client_id,))
                 row = cur.fetchone()
@@ -1829,11 +1785,11 @@ class VectorStore:
                 chars_per_token=lang_info["chars_per_token"],
             )
 
+        try:
+            return self._execute_with_retry(_op, "get_tenant_config")
         except Exception as e:
             logger.error(f"Failed to get tenant config: {e}")
             return None
-        finally:
-            self._release_connection(conn)
 
     def set_tenant_config(self, client_id: str, config: TenantLanguageConfig) -> None:
         """
@@ -1843,8 +1799,6 @@ class VectorStore:
             client_id: The tenant UUID
             config: The language configuration to set
         """
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO tenant_config
             (client_id, language, embedding_model, embedding_provider,
@@ -1859,7 +1813,7 @@ class VectorStore:
             updated_at = NOW()
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (
                     client_id,
@@ -1871,12 +1825,8 @@ class VectorStore:
                 ))
                 conn.commit()
             logger.info(f"Tenant config set for {client_id}: lang={config.language}")
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"Failed to set tenant config: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        self._execute_with_retry(_op, "set_tenant_config")
 
     # =========================================================================
     # User Auth & Conversation Schema (Google OAuth)
@@ -1968,7 +1918,6 @@ class VectorStore:
         """
         Create a new user or get existing one by google_sub.
         Updates last_login, name, and avatar_url on each login.
-        Retries once on stale connection (SSL drop).
 
         Returns:
             Dict with id, google_sub, email, name, avatar_url
@@ -1984,52 +1933,34 @@ class VectorStore:
         RETURNING id, google_sub, email, name, avatar_url
         """
 
-        for attempt in range(2):
-            conn = self._ensure_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(sql, (google_sub, email, name, avatar_url))
-                    row = cur.fetchone()
-                    conn.commit()
-
-                self._release_connection(conn)
-                if isinstance(row, dict):
-                    return {
-                        "id": str(row["id"]),
-                        "google_sub": row["google_sub"],
-                        "email": row["email"],
-                        "name": row["name"],
-                        "avatar_url": row["avatar_url"],
-                    }
+        def _op(conn):
+            with conn.cursor() as cur:
+                cur.execute(sql, (google_sub, email, name, avatar_url))
+                row = cur.fetchone()
+                conn.commit()
+            if isinstance(row, dict):
                 return {
-                    "id": str(row[0]),
-                    "google_sub": row[1],
-                    "email": row[2],
-                    "name": row[3],
-                    "avatar_url": row[4],
+                    "id": str(row["id"]),
+                    "google_sub": row["google_sub"],
+                    "email": row["email"],
+                    "name": row["name"],
+                    "avatar_url": row["avatar_url"],
                 }
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-                self._safe_rollback(conn)
-                self._release_connection(conn)
-                if attempt == 0:
-                    logger.warning(f"create_or_get_user: stale connection, reconnecting: {e}")
-                    self.connect()
-                    continue
-                logger.error(f"create_or_get_user failed after retry: {e}")
-                raise
-            except Exception as e:
-                self._safe_rollback(conn)
-                self._release_connection(conn)
-                logger.error(f"create_or_get_user failed: {e}")
-                raise
+            return {
+                "id": str(row[0]),
+                "google_sub": row[1],
+                "email": row[2],
+                "name": row[3],
+                "avatar_url": row[4],
+            }
+
+        return self._execute_with_retry(_op, "create_or_get_user")
 
     def get_user_by_id(self, user_id: str) -> Optional[dict]:
         """Get user by ID. Returns None if not found."""
-        conn = self._ensure_connection()
-
         sql = "SELECT id, google_sub, email, name, avatar_url FROM users WHERE id = %s::uuid"
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id,))
                 row = cur.fetchone()
@@ -2052,11 +1983,12 @@ class VectorStore:
                 "name": row[3],
                 "avatar_url": row[4],
             }
+
+        try:
+            return self._execute_with_retry(_op, "get_user_by_id")
         except Exception as e:
             logger.error(f"get_user_by_id failed: {e}")
             return None
-        finally:
-            self._release_connection(conn)
 
     # =========================================================================
     # Conversation CRUD
@@ -2064,15 +1996,13 @@ class VectorStore:
 
     def create_conversation(self, user_id: str, title: str = "New Chat") -> dict:
         """Create a new conversation for a user."""
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO conversations (user_id, title)
         VALUES (%s::uuid, %s)
         RETURNING id, user_id, title, created_at, updated_at
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id, title))
                 row = cur.fetchone()
@@ -2093,17 +2023,11 @@ class VectorStore:
                 "created_at": row[3].isoformat(),
                 "updated_at": row[4].isoformat(),
             }
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"create_conversation failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "create_conversation")
 
     def list_conversations(self, user_id: str) -> list[dict]:
         """List all conversations for a user, newest first."""
-        conn = self._ensure_connection()
-
         sql = """
         SELECT id, user_id, title, created_at, updated_at
         FROM conversations
@@ -2111,7 +2035,7 @@ class VectorStore:
         ORDER BY updated_at DESC
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id,))
                 rows = cur.fetchall()
@@ -2135,27 +2059,20 @@ class VectorStore:
                         "updated_at": row[4].isoformat(),
                     })
             return result
-        except Exception as e:
-            logger.error(f"list_conversations failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "list_conversations")
 
     def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
         """Delete a conversation and all its messages (user-isolated).
 
         Also deletes any chat-scoped documents tied to this conversation.
         """
-        conn = self._ensure_connection()
-
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
-                # Delete chat-scoped documents first
                 cur.execute(
                     "DELETE FROM legal_documents WHERE conversation_id = %s::uuid AND user_id = %s::uuid",
                     (conversation_id, user_id),
                 )
-                # Delete the conversation (cascades to messages)
                 cur.execute(
                     "DELETE FROM conversations WHERE id = %s::uuid AND user_id = %s::uuid",
                     (conversation_id, user_id),
@@ -2163,51 +2080,39 @@ class VectorStore:
                 deleted = cur.rowcount > 0
                 conn.commit()
             return deleted
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"delete_conversation failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "delete_conversation")
 
     def rename_conversation(self, conversation_id: str, user_id: str, title: str) -> bool:
         """Rename a conversation (user-isolated)."""
-        conn = self._ensure_connection()
-
         sql = """
         UPDATE conversations SET title = %s, updated_at = NOW()
         WHERE id = %s::uuid AND user_id = %s::uuid
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (title, conversation_id, user_id))
                 updated = cur.rowcount > 0
                 conn.commit()
             return updated
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"rename_conversation failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "rename_conversation")
 
     def touch_conversation(self, conversation_id: str) -> None:
         """Update the updated_at timestamp of a conversation."""
-        conn = self._ensure_connection()
-
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE conversations SET updated_at = NOW() WHERE id = %s::uuid",
                     (conversation_id,),
                 )
                 conn.commit()
+
+        try:
+            self._execute_with_retry(_op, "touch_conversation")
         except Exception as e:
-            self._safe_rollback(conn)
             logger.warning(f"touch_conversation failed: {e}")
-        finally:
-            self._release_connection(conn)
 
     # =========================================================================
     # Message CRUD
@@ -2222,8 +2127,6 @@ class VectorStore:
         latency_ms: Optional[float] = None,
     ) -> dict:
         """Add a message to a conversation."""
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO messages (conversation_id, role, content, sources, latency_ms)
         VALUES (%s::uuid, %s, %s, %s, %s)
@@ -2233,7 +2136,7 @@ class VectorStore:
         import json as _json
         sources_json = _json.dumps(sources) if sources else None
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (conversation_id, role, content, sources_json, latency_ms))
                 row = cur.fetchone()
@@ -2258,17 +2161,11 @@ class VectorStore:
                 "latency_ms": row[5],
                 "created_at": row[6].isoformat(),
             }
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"add_message failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "add_message")
 
     def get_messages(self, conversation_id: str, user_id: str) -> list[dict]:
         """Get all messages for a conversation (verified by user_id)."""
-        conn = self._ensure_connection()
-
         sql = """
         SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.latency_ms, m.created_at
         FROM messages m
@@ -2277,7 +2174,7 @@ class VectorStore:
         ORDER BY m.created_at ASC
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (conversation_id, user_id))
                 rows = cur.fetchall()
@@ -2305,11 +2202,8 @@ class VectorStore:
                         "created_at": row[6].isoformat(),
                     })
             return result
-        except Exception as e:
-            logger.error(f"get_messages failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "get_messages")
 
     # =========================================================================
     # Document Families
@@ -2373,15 +2267,13 @@ class VectorStore:
 
     def create_family(self, user_id: str, name: str) -> dict:
         """Create a new document family for a user."""
-        conn = self._ensure_connection()
-
         sql = """
         INSERT INTO document_families (user_id, name)
         VALUES (%s::uuid, %s)
         RETURNING id, user_id, name, is_active, created_at, updated_at
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id, name))
                 row = cur.fetchone()
@@ -2404,19 +2296,18 @@ class VectorStore:
                 "created_at": row[4].isoformat(),
                 "updated_at": row[5].isoformat(),
             }
+
+        try:
+            return self._execute_with_retry(_op, "create_family")
+        except ValueError:
+            raise
         except Exception as e:
-            self._safe_rollback(conn)
             if "unique" in str(e).lower():
                 raise ValueError(f"Family '{name}' already exists")
-            logger.error(f"create_family failed: {e}")
             raise
-        finally:
-            self._release_connection(conn)
 
     def list_families(self, user_id: str) -> list[dict]:
         """List all document families for a user."""
-        conn = self._ensure_connection()
-
         sql = """
         SELECT f.id, f.user_id, f.name, f.is_active, f.created_at, f.updated_at,
                COUNT(ld.id) as document_count
@@ -2427,7 +2318,7 @@ class VectorStore:
         ORDER BY f.name
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id,))
                 rows = cur.fetchall()
@@ -2455,49 +2346,41 @@ class VectorStore:
                         "updated_at": row[5].isoformat(),
                     })
             return result
-        except Exception as e:
-            logger.error(f"list_families failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "list_families")
 
     def rename_family(self, family_id: str, user_id: str, name: str) -> bool:
         """Rename a family (user-isolated)."""
-        conn = self._ensure_connection()
-
         sql = """
         UPDATE document_families SET name = %s, updated_at = NOW()
         WHERE id = %s::uuid AND user_id = %s::uuid
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (name, family_id, user_id))
                 updated = cur.rowcount > 0
                 conn.commit()
             return updated
+
+        try:
+            return self._execute_with_retry(_op, "rename_family")
+        except ValueError:
+            raise
         except Exception as e:
-            self._safe_rollback(conn)
             if "unique" in str(e).lower():
                 raise ValueError(f"Family '{name}' already exists")
-            logger.error(f"rename_family failed: {e}")
             raise
-        finally:
-            self._release_connection(conn)
 
     def delete_family(self, family_id: str, user_id: str) -> bool:
         """Delete a family. Documents are unassigned (family_id set to NULL via ON DELETE SET NULL)."""
-        conn = self._ensure_connection()
-
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
-                # Unassign chunks from this family
                 cur.execute(
                     f"UPDATE {self.config.table_name} SET family_id = NULL "
                     "WHERE family_id = %s::uuid AND client_id = %s::uuid",
                     (family_id, user_id),
                 )
-                # Delete the family (cascades ON DELETE SET NULL for legal_documents)
                 cur.execute(
                     "DELETE FROM document_families WHERE id = %s::uuid AND user_id = %s::uuid",
                     (family_id, user_id),
@@ -2505,61 +2388,47 @@ class VectorStore:
                 deleted = cur.rowcount > 0
                 conn.commit()
             return deleted
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"delete_family failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "delete_family")
 
     def set_family_active(self, family_id: str, user_id: str, is_active: bool) -> bool:
         """Toggle a family's active status. Caller must enforce max 3 active."""
-        conn = self._ensure_connection()
-
         sql = """
         UPDATE document_families SET is_active = %s, updated_at = NOW()
         WHERE id = %s::uuid AND user_id = %s::uuid
         """
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (is_active, family_id, user_id))
                 updated = cur.rowcount > 0
                 conn.commit()
             return updated
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"set_family_active failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "set_family_active")
 
     def get_active_family_count(self, user_id: str) -> int:
         """Get the number of active families for a user."""
-        conn = self._ensure_connection()
-
         sql = "SELECT COUNT(*) FROM document_families WHERE user_id = %s::uuid AND is_active = TRUE"
 
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
                 cur.execute(sql, (user_id,))
                 row = cur.fetchone()
             return row["count"] if isinstance(row, dict) else row[0]
+
+        try:
+            return self._execute_with_retry(_op, "get_active_family_count")
         except Exception as e:
             logger.error(f"get_active_family_count failed: {e}")
             return 0
-        finally:
-            self._release_connection(conn)
 
     def move_document_to_family(
         self, document_id: str, family_id: Optional[str], user_id: str
     ) -> bool:
         """Move a document (and its chunks) to a family (or unassign with family_id=None)."""
-        conn = self._ensure_connection()
-
-        try:
+        def _op(conn):
             with conn.cursor() as cur:
-                # Update legal_documents
                 if family_id:
                     cur.execute(
                         "UPDATE legal_documents SET family_id = %s::uuid "
@@ -2575,7 +2444,6 @@ class VectorStore:
                 updated = cur.rowcount > 0
 
                 if updated:
-                    # Update chunks
                     if family_id:
                         cur.execute(
                             f"UPDATE {self.config.table_name} SET family_id = %s::uuid "
@@ -2591,12 +2459,8 @@ class VectorStore:
 
                 conn.commit()
             return updated
-        except Exception as e:
-            self._safe_rollback(conn)
-            logger.error(f"move_document_to_family failed: {e}")
-            raise
-        finally:
-            self._release_connection(conn)
+
+        return self._execute_with_retry(_op, "move_document_to_family")
 
     def create_greek_fts_index(self) -> None:
         """Create Greek FTS index on-demand (when first Greek tenant is created)."""
