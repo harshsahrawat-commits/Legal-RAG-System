@@ -14,7 +14,6 @@ openai>=1.0.0
 
 # Vector Database
 psycopg2-binary>=2.9.0
-pgvector>=0.3.0
 
 # API Backend
 fastapi>=0.104.0

@@ -18,7 +18,7 @@ else
 fi
 
 # Verify required env vars
-REQUIRED_VARS=(POSTGRES_URL VOYAGE_API_KEY COHERE_API_KEY NVIDIA_API_KEY)
+REQUIRED_VARS=(POSTGRES_URL VOYAGE_API_KEY COHERE_API_KEY NVIDIA_API_KEY GOOGLE_CLIENT_ID JWT_SECRET)
 for var in "${REQUIRED_VARS[@]}"; do
     if [ -z "${!var:-}" ]; then
         echo "ERROR: $var is not set in .env"

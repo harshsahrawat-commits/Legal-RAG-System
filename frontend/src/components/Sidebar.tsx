@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Plus, MessageSquare, Trash2, Pencil, Check, X,
-  ChevronLeft, Settings, LogOut, MoreHorizontal,
+  ChevronLeft, Settings, LogOut, MoreHorizontal, Loader2,
 } from 'lucide-react'
 import { api } from '../api'
 import { useStore } from '../store'
@@ -35,10 +35,12 @@ export default function Sidebar() {
 
   const [collapsed, setCollapsed] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [loadingConvId, setLoadingConvId] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
 
   const loadConversations = useCallback(async () => {
     try {
@@ -54,6 +56,18 @@ export default function Sidebar() {
   useEffect(() => {
     loadConversations()
   }, [loadConversations])
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!menuOpenId) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setMenuOpenId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [menuOpenId])
 
   const grouped = useMemo(() => {
     const groups: Record<string, Conversation[]> = {}
@@ -74,6 +88,7 @@ export default function Sidebar() {
     if (id === activeId) return
     setActiveId(id)
     setMessages([])
+    setLoadingConvId(id)
 
     try {
       const { data } = await api.conversations.messages(id)
@@ -92,6 +107,8 @@ export default function Sidebar() {
         content: 'Failed to load conversation messages.',
         isError: true,
       }])
+    } finally {
+      setLoadingConvId(null)
     }
   }
 
@@ -171,6 +188,12 @@ export default function Sidebar() {
         {!loading && conversations.length === 0 && (
           <p style={styles.emptyText}>No conversations yet</p>
         )}
+        {loadingConvId && (
+          <div style={styles.convLoading}>
+            <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+            <span>Loading messages...</span>
+          </div>
+        )}
 
         {GROUP_ORDER.map((group) => {
           const items = grouped[group]
@@ -181,6 +204,14 @@ export default function Sidebar() {
               {items.map((c) => (
                 <div
                   key={c.id}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && renamingId !== c.id) {
+                      e.preventDefault()
+                      handleSelectConversation(c.id)
+                    }
+                  }}
                   style={{
                     ...styles.convItem,
                     ...(c.id === activeId ? styles.convItemActive : {}),
@@ -221,7 +252,7 @@ export default function Sidebar() {
                           Confirm?
                         </button>
                       ) : (
-                        <div style={{ position: 'relative' as const }}>
+                        <div ref={menuOpenId === c.id ? contextMenuRef : undefined} style={{ position: 'relative' as const }}>
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -545,5 +576,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     textAlign: 'center',
     padding: 24,
+  },
+  convLoading: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 14px',
+    fontSize: 12,
+    color: 'var(--text-3)',
   },
 }

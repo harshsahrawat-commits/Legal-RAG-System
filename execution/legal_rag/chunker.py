@@ -458,11 +458,6 @@ class LegalChunker:
 
         return segments if segments else [([base_paragraph_offset + 1], content)]
 
-    def _split_on_paragraphs_simple(self, content: str) -> list[str]:
-        """Simple paragraph split without index tracking (for backward compatibility)."""
-        paragraphs = re.split(r'\n\n+', content)
-        return [p for p in paragraphs if p.strip()]
-
     def _split_on_sentences(
         self,
         content: str,

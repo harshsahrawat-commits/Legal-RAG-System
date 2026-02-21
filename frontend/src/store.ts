@@ -20,9 +20,6 @@ interface AppState {
   activeConversationId: string | null
   setActiveConversationId: (id: string | null) => void
 
-  selectedDocumentId: string | null
-  setSelectedDocumentId: (id: string | null) => void
-
   sourceToggles: SourceToggles
   setSourceToggle: (source: keyof Omit<SourceToggles, 'families'>, enabled: boolean) => void
   setFamilyToggle: (familyId: string, enabled: boolean) => void
@@ -84,9 +81,6 @@ export const useStore = create<AppState>((set, get) => ({
   setConversations: (convos) => set({ conversations: convos }),
   activeConversationId: null,
   setActiveConversationId: (id) => set({ activeConversationId: id }),
-
-  selectedDocumentId: null,
-  setSelectedDocumentId: (id) => set({ selectedDocumentId: id }),
 
   sourceToggles: { cylaw: true, hudoc: true, eurlex: true, families: [] },
   setSourceToggle: (source, enabled) => set((state) => ({

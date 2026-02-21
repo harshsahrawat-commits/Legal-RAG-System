@@ -3,7 +3,6 @@ Pydantic models for the Legal RAG FastAPI backend.
 """
 
 from typing import Optional
-from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -148,7 +147,7 @@ class MessageResponse(BaseModel):
     id: str
     role: str
     content: str
-    sources: Optional[list] = None
+    sources: Optional[list] = None  # list of dicts with 'title', 'content', 'score' keys
     latency_ms: Optional[float] = None
     created_at: str
 

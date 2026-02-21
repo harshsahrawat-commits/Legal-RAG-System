@@ -121,18 +121,16 @@ class VectorStore:
                     maxconn=self.config.pool_max_connections,
                     dsn=self._connection_string,
                 )
-                # Also create a persistent connection for methods that use self._conn directly
-                # This maintains backward compatibility while still having pool available
-                self._conn = psycopg2.connect(
-                    self._connection_string,
-                    cursor_factory=RealDictCursor
-                )
-                self._conn.autocommit = False
+                self._conn = None  # Pool is the only connection source
 
-                # Ensure pgvector extension
-                with self._conn.cursor() as cur:
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                    self._conn.commit()
+                # Ensure pgvector extension using a pooled connection
+                conn = self._pool.getconn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                        conn.commit()
+                finally:
+                    self._pool.putconn(conn)
 
                 logger.info(
                     f"Connection pool initialized (min={self.config.pool_min_connections}, "
@@ -167,13 +165,18 @@ class VectorStore:
         Uses lazy connection checking — only reconnects when the connection
         is known to be closed, avoiding a SELECT 1 round-trip on every call.
         Stale connections are caught by _ensure_connection's retry logic.
+
+        Sets hnsw.ef_search and tenant context per-connection so individual
+        queries don't need to repeat these SET commands.
         """
         if self._pool:
             try:
                 conn = self._pool.getconn()
-                # Set tenant context if we have one
-                if self._current_tenant:
-                    with conn.cursor() as cur:
+                with conn.cursor() as cur:
+                    # Tune HNSW search once per connection checkout
+                    cur.execute("SET hnsw.ef_search = 25")
+                    # Set tenant context if we have one
+                    if self._current_tenant:
                         cur.execute("SET app.current_tenant = %s", (self._current_tenant,))
                 return conn
             except (psycopg2.OperationalError, psycopg2.InterfaceError):
@@ -201,10 +204,15 @@ class VectorStore:
         """Ensure we have a connection (pool or single) and return it."""
         if not self._conn and not self._pool:
             self.connect()
-        
+
+        conn = None
         try:
-            return self._get_connection()
+            conn = self._get_connection()
+            return conn
         except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # Release the failed connection back to the pool before reconnecting
+            if conn is not None:
+                self._release_connection(conn)
             logger.warning("Database error in _ensure_connection, retrying after reconnect...")
             self.connect()
             return self._get_connection()
@@ -1187,9 +1195,7 @@ class VectorStore:
 
         def _op(conn):
             with conn.cursor() as cur:
-                # Tune HNSW search: lower ef_search for faster queries
-                # Default is 40; 25 gives ~98.5% recall at ~94K vectors with ~2x speedup
-                cur.execute("SET hnsw.ef_search = 25")
+                # hnsw.ef_search is set once per connection in _get_connection()
                 cur.execute(sql, final_params)
                 rows = cur.fetchall()
 
@@ -1615,11 +1621,22 @@ class VectorStore:
     ) -> dict[str, dict]:
         """Look up document titles, file_path, and metadata by IDs.
 
+        Args:
+            document_ids: List of document IDs to look up.
+            client_id: Tenant ID for multi-tenant isolation. Should always be
+                provided when called with doc_ids to prevent cross-tenant leakage.
+
         Returns:
             Dict mapping document_id to {"title": ..., "file_path": ..., "metadata": ...}
         """
         if not document_ids:
             return {}
+
+        if client_id is None:
+            logger.warning(
+                "get_document_source_meta called without client_id — "
+                "results are not tenant-isolated. Pass client_id for security."
+            )
 
         placeholders = ",".join(["%s::uuid"] * len(document_ids))
         sql = f"SELECT id, title, file_path, metadata FROM legal_documents WHERE id IN ({placeholders})"
@@ -1656,17 +1673,32 @@ class VectorStore:
             logger.error(f"Failed to get document source meta: {e}")
             return {}
 
-    def get_document_chunks(self, document_id: str) -> list[dict]:
-        """Get all chunks for a document."""
+    def get_document_chunks(
+        self,
+        document_id: str,
+        client_id: Optional[str] = None,
+    ) -> list[dict]:
+        """Get all chunks for a document.
+
+        Args:
+            document_id: Document ID to fetch chunks for.
+            client_id: Optional tenant ID for multi-tenant isolation.
+        """
+        params: list = [document_id]
+        client_filter = ""
+        if client_id:
+            client_filter = " AND client_id = %s::uuid"
+            params.append(client_id)
+
         sql = f"""
         SELECT * FROM {self.config.table_name}
-        WHERE document_id = %s::uuid
+        WHERE document_id = %s::uuid{client_filter}
         ORDER BY level, hierarchy_path
         """
 
         def _op(conn):
             with conn.cursor() as cur:
-                cur.execute(sql, (document_id,))
+                cur.execute(sql, params)
                 return cur.fetchall()
 
         return self._execute_with_retry(_op, "get_document_chunks")

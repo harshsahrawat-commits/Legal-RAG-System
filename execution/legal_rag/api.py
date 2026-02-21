@@ -11,14 +11,13 @@ import os
 import re
 import json
 import time
-import uuid
 import shutil
 import logging
 import tempfile
 from typing import Optional
 from pathlib import Path
 from collections import defaultdict
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -121,7 +120,6 @@ def _stem_from_title(title: str | None) -> str | None:
     """
     if not title:
         return None
-    import re
     # Volume mapping: (I)→1, (II)→2, (III)→3 — Latin or Greek iota
     for roman, volume in [("III", "3"), ("II", "2"), ("I", "1")]:
         # Match both Latin I and Greek Ι
@@ -194,7 +192,7 @@ _rate_limiter = RateLimiter(
 async def check_rate_limit(request: Request):
     """FastAPI dependency that enforces rate limiting per user/IP."""
     auth_header = request.headers.get("authorization", "")
-    identifier = auth_header[7:20] if auth_header.startswith("Bearer ") else request.client.host
+    identifier = auth_header[7:50] if auth_header.startswith("Bearer ") else request.client.host
     if not _rate_limiter.is_allowed(identifier):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
@@ -464,8 +462,6 @@ def _build_context_string(cited_contents, sources_list):
     return "\n\n".join(context_parts)
 
 
-import re as _re
-
 def _clean_answer(text: str) -> str:
     """Post-process LLM answer to strip markdown formatting the model may have added.
 
@@ -473,19 +469,19 @@ def _clean_answer(text: str) -> str:
     and horizontal rules while preserving [N] citation brackets.
     """
     # Remove bold: **text** -> text
-    text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     # Remove italic: *text* -> text (but not inside citations like [1])
-    text = _re.sub(r'(?<!\[)\*(.+?)\*(?!\])', r'\1', text)
+    text = re.sub(r'(?<!\[)\*(.+?)\*(?!\])', r'\1', text)
     # Remove markdown headers: ### Header -> Header
-    text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # Remove numbered list prefixes: "1. **Title**:" or "1. Title:" -> "Title:"
-    text = _re.sub(r'^\d+\.\s+', '', text, flags=_re.MULTILINE)
+    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
     # Remove horizontal rules
-    text = _re.sub(r'^-{3,}$', '', text, flags=_re.MULTILINE)
-    # Clean up any leftover stray asterisks
-    text = text.replace('*', '')
+    text = re.sub(r'^-{3,}$', '', text, flags=re.MULTILINE)
+    # Clean up any leftover markdown bold/italic markers (preserve standalone asterisks in legal text)
+    text = re.sub(r'\*{1,3}', '', text)
     # Collapse triple+ newlines to double
-    text = _re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 
@@ -512,7 +508,7 @@ async def health_check():
 
 
 @app.post("/api/v1/documents/upload", response_model=UploadResponse, dependencies=[Depends(check_rate_limit)])
-async def upload_document(
+def upload_document(
     file: UploadFile = File(...),
     family_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
@@ -545,7 +541,9 @@ async def upload_document(
 
     # Save to temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        content = await file.read()
+        content = file.file.read()
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 50MB.")
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -617,7 +615,7 @@ async def upload_document(
 
 
 @app.get("/api/v1/documents", response_model=list[DocumentInfo])
-async def list_documents(
+def list_documents(
     client: dict = Depends(get_authenticated_client),
 ):
     """List all persistent documents for the authenticated tenant (excludes session docs)."""
@@ -642,7 +640,7 @@ async def list_documents(
 
 
 @app.delete("/api/v1/documents/{document_id}")
-async def delete_document(
+def delete_document(
     document_id: str,
     client: dict = Depends(get_authenticated_client),
 ):
@@ -672,16 +670,19 @@ async def delete_document(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to delete document {document_id}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete document")
 
 
 @app.post("/api/v1/query", response_model=QueryResponse, dependencies=[Depends(check_rate_limit)])
-async def query_documents(
+def query_documents(
     request: QueryRequest,
     client: dict = Depends(get_authenticated_client),
     lang_config: TenantLanguageConfig = Depends(get_tenant_config),
 ):
     """RAG query with citations. Supports multi-source toggles (CyLaw, HUDOC, EUR-Lex)."""
+    if len(request.query) > 2000:
+        raise HTTPException(status_code=400, detail="Query too long. Maximum length is 2000 characters.")
     start_time = time.time()
     client_id = client["client_id"]
     services = _container.get_services(lang_config)
@@ -697,6 +698,7 @@ async def query_documents(
         )
 
     # Quota enforcement
+    quota_manager = None
     try:
         from .quotas import get_quota_manager, QuotaExceededError
         quota_manager = get_quota_manager(store)
@@ -798,6 +800,13 @@ async def query_documents(
         answer_data=answer_data,
     )
 
+    # Record successful query for quota tracking
+    if quota_manager:
+        try:
+            quota_manager.record_query(client_id)
+        except Exception as e:
+            logger.warning(f"Quota recording failed: {e}")
+
     return QueryResponse(
         answer=answer,
         sources=all_sources,
@@ -806,7 +815,7 @@ async def query_documents(
 
 
 @app.post("/api/v1/query/stream", dependencies=[Depends(check_rate_limit)])
-async def query_documents_stream(
+def query_documents_stream(
     request: StreamQueryRequest,
     client: dict = Depends(get_authenticated_client),
     lang_config: TenantLanguageConfig = Depends(get_tenant_config),
@@ -819,6 +828,8 @@ async def query_documents_stream(
       - {"event": "done", "data": {"latency_ms": ..., "conversation_id": ...}}  (final)
       - {"event": "error", "data": "..."}    (on failure)
     """
+    if len(request.query) > 2000:
+        raise HTTPException(status_code=400, detail="Query too long. Maximum length is 2000 characters.")
     start_time = time.time()
     client_id = client["client_id"]
     user_id = client.get("user_id", client_id)
@@ -828,6 +839,7 @@ async def query_documents_stream(
     conversation_id = request.conversation_id
 
     # Quota enforcement
+    quota_manager = None
     try:
         from .quotas import get_quota_manager, QuotaExceededError
         quota_manager = get_quota_manager(store)
@@ -981,7 +993,7 @@ async def query_documents_stream(
                 for chunk in stream:
                     if chunk.choices and chunk.choices[0].delta.content:
                         token = chunk.choices[0].delta.content
-                        token = token.replace('*', '')
+                        token = re.sub(r'\*{1,3}', '', token)
                         full_answer += token
                         yield _sse_event("token", token)
 
@@ -1006,6 +1018,13 @@ async def query_documents_stream(
                 query_embedding=original_embedding,
                 answer_data=answer_data,
             )
+
+            # Record successful query for quota tracking
+            if quota_manager:
+                try:
+                    quota_manager.record_query(client_id)
+                except Exception as exc:
+                    logger.warning(f"Quota recording failed: {exc}")
 
             # Save messages to DB
             elapsed = (time.time() - start_time) * 1000
@@ -1102,7 +1121,7 @@ async def update_config(
 # =============================================================================
 
 @app.get("/api/v1/families", response_model=list[FamilyResponse])
-async def list_families(
+def list_families(
     client: dict = Depends(get_authenticated_user),
 ):
     """List all document families for the authenticated user."""
@@ -1122,7 +1141,7 @@ async def list_families(
 
 
 @app.post("/api/v1/families", response_model=FamilyResponse)
-async def create_family(
+def create_family(
     body: FamilyCreate,
     client: dict = Depends(get_authenticated_user),
 ):
@@ -1143,7 +1162,7 @@ async def create_family(
 
 
 @app.put("/api/v1/families/{family_id}/name")
-async def rename_family_endpoint(
+def rename_family_endpoint(
     family_id: str,
     body: FamilyRename,
     client: dict = Depends(get_authenticated_user),
@@ -1160,7 +1179,7 @@ async def rename_family_endpoint(
 
 
 @app.put("/api/v1/families/{family_id}/active")
-async def set_family_active_endpoint(
+def set_family_active_endpoint(
     family_id: str,
     body: FamilySetActive,
     client: dict = Depends(get_authenticated_user),
@@ -1181,7 +1200,7 @@ async def set_family_active_endpoint(
 
 
 @app.delete("/api/v1/families/{family_id}")
-async def delete_family_endpoint(
+def delete_family_endpoint(
     family_id: str,
     client: dict = Depends(get_authenticated_user),
 ):
@@ -1195,7 +1214,7 @@ async def delete_family_endpoint(
 
 
 @app.put("/api/v1/documents/{document_id}/family")
-async def move_document_to_family_endpoint(
+def move_document_to_family_endpoint(
     document_id: str,
     body: MoveDocumentRequest,
     client: dict = Depends(get_authenticated_user),
@@ -1266,7 +1285,7 @@ async def get_me(client: dict = Depends(get_authenticated_user)):
 # =============================================================================
 
 @app.get("/api/v1/conversations", response_model=list[ConversationResponse])
-async def list_conversations_endpoint(
+def list_conversations_endpoint(
     client: dict = Depends(get_authenticated_user),
 ):
     """List all conversations for the authenticated user (newest first)."""
@@ -1284,7 +1303,7 @@ async def list_conversations_endpoint(
 
 
 @app.post("/api/v1/conversations", response_model=ConversationResponse)
-async def create_conversation_endpoint(
+def create_conversation_endpoint(
     body: ConversationCreate,
     client: dict = Depends(get_authenticated_user),
 ):
@@ -1300,7 +1319,7 @@ async def create_conversation_endpoint(
 
 
 @app.delete("/api/v1/conversations/{conversation_id}")
-async def delete_conversation_endpoint(
+def delete_conversation_endpoint(
     conversation_id: str,
     client: dict = Depends(get_authenticated_user),
 ):
@@ -1313,7 +1332,7 @@ async def delete_conversation_endpoint(
 
 
 @app.put("/api/v1/conversations/{conversation_id}/title")
-async def rename_conversation_endpoint(
+def rename_conversation_endpoint(
     conversation_id: str,
     body: ConversationRename,
     client: dict = Depends(get_authenticated_user),
@@ -1327,7 +1346,7 @@ async def rename_conversation_endpoint(
 
 
 @app.get("/api/v1/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
-async def get_messages_endpoint(
+def get_messages_endpoint(
     conversation_id: str,
     client: dict = Depends(get_authenticated_user),
 ):

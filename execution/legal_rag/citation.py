@@ -258,99 +258,6 @@ class CitationExtractor:
 
         return ""
 
-    def format_response_with_citations(
-        self,
-        response_text: str,
-        cited_contents: list[CitedContent],
-    ) -> str:
-        """
-        Format a response with citations appended.
-
-        Args:
-            response_text: The AI-generated response
-            cited_contents: List of cited contents used in response
-
-        Returns:
-            Response text with sources section
-        """
-        if not cited_contents:
-            return response_text
-
-        # Build sources section with language-appropriate label
-        labels = LABELS.get(self._lang, LABELS["en"])
-        sources = f"\n\n---\n**{labels['sources']}**\n"
-        seen_citations = set()
-
-        for i, cc in enumerate(cited_contents, 1):
-            citation_key = (cc.citation.document_title, cc.citation.section)
-            if citation_key not in seen_citations:
-                sources += f"{i}. {cc.citation.long_format()}\n"
-                seen_citations.add(citation_key)
-
-        return response_text + sources
-
-    def create_citation_index(
-        self,
-        cited_contents: list[CitedContent],
-    ) -> dict:
-        """
-        Create an indexed map of citations for reference.
-
-        Returns:
-            Dictionary mapping citation numbers to CitedContent
-        """
-        return {
-            i: cc.to_dict()
-            for i, cc in enumerate(cited_contents, 1)
-        }
-
-
-class LegalCitationFormatter:
-    """
-    Formats citations in standard legal citation styles.
-
-    Supports:
-    - Bluebook format (US)
-    - OSCOLA format (UK)
-    - Simple inline format
-    """
-
-    @staticmethod
-    def bluebook(citation: Citation) -> str:
-        """Format citation in Bluebook style."""
-        # Simplified Bluebook format
-        parts = []
-
-        if citation.document_title:
-            parts.append(citation.document_title)
-
-        if citation.section:
-            parts.append(f"§ {citation.section.replace('Section ', '')}")
-
-        if citation.page_numbers:
-            if len(citation.page_numbers) == 1:
-                parts.append(f"at {citation.page_numbers[0]}")
-            else:
-                parts.append(
-                    f"at {citation.page_numbers[0]}-{citation.page_numbers[-1]}"
-                )
-
-        return ", ".join(parts) + "."
-
-    @staticmethod
-    def oscola(citation: Citation) -> str:
-        """Format citation in OSCOLA style (UK)."""
-        parts = [citation.document_title]
-
-        if citation.section:
-            parts.append(f"s {citation.section.replace('Section ', '')}")
-
-        return ", ".join(parts)
-
-    @staticmethod
-    def inline(citation: Citation) -> str:
-        """Format as inline citation."""
-        return citation.short_format()
 
 
 # CLI for testing
@@ -383,4 +290,3 @@ if __name__ == "__main__":
         print(f"\nContent: {cc.content[:100]}...")
         print(f"Short citation: {cc.citation.short_format()}")
         print(f"Long citation: {cc.citation.long_format()}")
-        print(f"Bluebook: {LegalCitationFormatter.bluebook(cc.citation)}")

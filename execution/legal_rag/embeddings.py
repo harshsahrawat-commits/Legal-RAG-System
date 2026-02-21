@@ -183,7 +183,10 @@ class BaseEmbeddingService:
             self._set_cached(cache_key, result[0])
             return result[0]
 
-        return []
+        # Return zero vector of correct dimension to prevent downstream
+        # dimension mismatch errors (e.g. in pgvector or cosine similarity)
+        logger.warning("embed_query returned empty result; returning zero vector")
+        return [0.0] * self.config.dimensions
 
     def _embed_batch(
         self,

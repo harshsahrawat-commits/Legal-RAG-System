@@ -4,7 +4,7 @@
 # ==============================================================================
 
 # Stage 1: Build dependencies
-FROM python:3.14-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 # Stage 2: Production image
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -36,8 +36,6 @@ COPY --from=builder /install /usr/local
 
 # Copy application code
 COPY execution/ execution/
-COPY cloud_migrate.py .
-COPY create_api_key.py .
 
 # Create writable directories for non-root user
 RUN mkdir -p document_files && chown appuser:appuser document_files

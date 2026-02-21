@@ -2,8 +2,8 @@
 Tests for execution/legal_rag/citation.py
 
 Covers: Citation dataclass (short_format, long_format, Bluebook, OSCOLA),
-        CitedContent, CitationExtractor, LegalCitationFormatter,
-        paragraph citations, page formatting, and response formatting.
+        CitedContent, CitationExtractor,
+        paragraph citations, and page formatting.
 """
 
 import pytest
@@ -302,101 +302,3 @@ class TestCitationExtractor:
         assert cited[0].citation.paragraph_numbers == [15, 16, 17]
 
 
-class TestCitationExtractorFormatResponse:
-    """Tests for format_response_with_citations."""
-
-    def test_format_appends_sources(self, sample_search_results):
-        from execution.legal_rag.citation import CitationExtractor
-        extractor = CitationExtractor(
-            document_titles={"doc-001": "Contract"}
-        )
-        cited = extractor.extract(sample_search_results)
-        response = "The termination clause allows 60-day notice."
-        formatted = extractor.format_response_with_citations(response, cited)
-        assert "Sources:" in formatted
-        assert response in formatted
-
-    def test_format_empty_citations_returns_original(self):
-        from execution.legal_rag.citation import CitationExtractor
-        extractor = CitationExtractor()
-        response = "Plain response."
-        assert extractor.format_response_with_citations(response, []) == response
-
-    def test_deduplicates_citations(self, sample_search_results):
-        from execution.legal_rag.citation import CitationExtractor
-        extractor = CitationExtractor(
-            document_titles={"doc-001": "Contract"}
-        )
-        cited = extractor.extract(sample_search_results)
-        formatted = extractor.format_response_with_citations("Response", cited)
-        # Should not have duplicate source entries for same title/section
-        lines = formatted.split("\n")
-        source_lines = [l for l in lines if l.strip().startswith(("1.", "2.", "3.", "4.", "5."))]
-        # At most 3 (one per unique title/section combo)
-        assert len(source_lines) <= 3
-
-
-class TestCitationIndex:
-    """Tests for create_citation_index."""
-
-    def test_index_created(self, sample_search_results):
-        from execution.legal_rag.citation import CitationExtractor
-        extractor = CitationExtractor()
-        cited = extractor.extract(sample_search_results)
-        index = extractor.create_citation_index(cited)
-        assert 1 in index
-        assert 2 in index
-        assert "content" in index[1]
-        assert "citation" in index[1]
-
-
-# ---------------------------------------------------------------------------
-# LegalCitationFormatter
-# ---------------------------------------------------------------------------
-
-class TestLegalCitationFormatter:
-    """Tests for Bluebook, OSCOLA, and inline formatters."""
-
-    @pytest.fixture
-    def citation(self):
-        from execution.legal_rag.citation import Citation
-        return Citation(
-            document_title="Employment Agreement",
-            section="Section 5.1",
-            page_numbers=[12, 13],
-            hierarchy_path="Doc/Section_5.1",
-            chunk_id="c1",
-            document_id="d1",
-            relevance_score=0.88,
-        )
-
-    def test_bluebook_format(self, citation):
-        from execution.legal_rag.citation import LegalCitationFormatter
-        result = LegalCitationFormatter.bluebook(citation)
-        assert "Employment Agreement" in result
-        # Bluebook uses section symbol
-        assert "\u00a7" in result  # section symbol
-        assert result.endswith(".")
-
-    def test_bluebook_no_section(self):
-        from execution.legal_rag.citation import Citation, LegalCitationFormatter
-        c = Citation(
-            document_title="Title", section="",
-            page_numbers=[1], hierarchy_path="P",
-            chunk_id="c", document_id="d", relevance_score=0.5,
-        )
-        result = LegalCitationFormatter.bluebook(c)
-        assert "Title" in result
-        assert "\u00a7" not in result
-
-    def test_oscola_format(self, citation):
-        from execution.legal_rag.citation import LegalCitationFormatter
-        result = LegalCitationFormatter.oscola(citation)
-        assert "Employment Agreement" in result
-        assert "s " in result  # OSCOLA uses 's' prefix
-
-    def test_inline_format(self, citation):
-        from execution.legal_rag.citation import LegalCitationFormatter
-        result = LegalCitationFormatter.inline(citation)
-        assert result.startswith("[")
-        assert result.endswith("]")

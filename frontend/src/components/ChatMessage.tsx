@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { User, Bot, Clock, Copy, Check, AlertCircle, FileText, ExternalLink, ChevronRight } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -514,7 +514,7 @@ const thinkingStyles: Record<string, React.CSSProperties> = {
   },
 }
 
-export default function ChatMessage({ message, isStreaming = false }: Props) {
+function ChatMessage({ message, isStreaming = false }: Props) {
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
@@ -605,7 +605,7 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
                 key={i}
                 num={part.citationNumber!}
                 source={message.sources?.[part.citationNumber! - 1]}
-                valid={isValidCitation(part.citationNumber!)!}
+                valid={isValidCitation(part.citationNumber!)}
                 onClick={() => handleCitationClick(part.citationNumber!)}
               />
             )
@@ -626,7 +626,7 @@ export default function ChatMessage({ message, isStreaming = false }: Props) {
               key={i}
               num={part.citationNumber!}
               source={message.sources?.[part.citationNumber! - 1]}
-              valid={isValidCitation(part.citationNumber!)!}
+              valid={isValidCitation(part.citationNumber!)}
               onClick={() => handleCitationClick(part.citationNumber!)}
             />
           )
@@ -879,3 +879,5 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
 }
+
+export default React.memo(ChatMessage)

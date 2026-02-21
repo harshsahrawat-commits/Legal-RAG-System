@@ -23,12 +23,6 @@ export interface SourceInfo {
   external_url?: string | null
 }
 
-export interface QueryResponse {
-  answer: string
-  sources: SourceInfo[]
-  latency_ms: number
-}
-
 export interface DocumentInfo {
   id: string
   title: string
@@ -57,29 +51,6 @@ export interface UploadResponse {
   jurisdiction: string | null
   page_count: number
   chunks: number
-}
-
-export interface TenantConfig {
-  language: string
-  embedding_model: string
-  embedding_provider: string
-  llm_model: string
-  reranker_model: string
-  fts_language: string
-}
-
-export interface TenantConfigUpdate {
-  language?: string
-  embedding_model?: string
-  embedding_provider?: string
-  llm_model?: string
-  reranker_model?: string
-}
-
-export interface HealthResponse {
-  status: string
-  version: string
-  database: string
 }
 
 export interface ChatMessage {

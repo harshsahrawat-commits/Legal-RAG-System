@@ -2,8 +2,7 @@
 Tests for execution/legal_rag/retriever.py
 
 Covers: QUERY_CONFIGS, QueryResultCache, RetrievalConfig, HybridRetriever
-        (RRF, query classification, smart reranking, paragraph extraction),
-        and SimpleRetriever.
+        (RRF, query classification, smart reranking, paragraph extraction).
 
 All external API calls (Cohere reranker, NVIDIA LLM) are mocked.
 """

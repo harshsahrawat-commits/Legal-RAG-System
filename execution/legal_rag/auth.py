@@ -20,6 +20,17 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "168"))  # 7 days default
 
+if not GOOGLE_CLIENT_ID:
+    raise RuntimeError(
+        "GOOGLE_CLIENT_ID environment variable is not set. "
+        "Set it in .env or as an environment variable."
+    )
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is not set. "
+        "Generate a random secret string and set it in .env or as an environment variable."
+    )
+
 
 def verify_google_token(token: str) -> Optional[dict]:
     """
@@ -49,6 +60,9 @@ def verify_google_token(token: str) -> Optional[dict]:
         }
     except ValueError as e:
         logger.warning(f"Google token verification failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error during Google token verification: {e}")
         return None
 
 

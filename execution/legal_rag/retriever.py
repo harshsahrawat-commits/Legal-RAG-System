@@ -116,7 +116,11 @@ class QueryResultCache:
         """Compute cosine similarity between two vectors."""
         a_arr = np.array(a)
         b_arr = np.array(b)
-        return float(np.dot(a_arr, b_arr) / (np.linalg.norm(a_arr) * np.linalg.norm(b_arr)))
+        norm_a = np.linalg.norm(a_arr)
+        norm_b = np.linalg.norm(b_arr)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(a_arr, b_arr) / (norm_a * norm_b))
 
     def _make_cache_key(self, embedding: list[float]) -> str:
         """Create cache key from full embedding to avoid collisions."""
@@ -1084,68 +1088,6 @@ class HybridRetriever:
             logger.warning(f"Reranking failed: {e}. Using original order.")
             return results
 
-    def retrieve_with_context(
-        self,
-        query: str,
-        client_id: Optional[str] = None,
-        document_id: Optional[str] = None,
-        top_k: Optional[int] = None,
-        include_parents: bool = True,
-    ) -> list[SearchResult]:
-        """
-        Retrieve with parent context for better understanding.
-
-        When a leaf chunk is retrieved, also fetch its parent
-        section for broader context.
-        """
-        results = self.retrieve(
-            query=query,
-            client_id=client_id,
-            document_id=document_id,
-            top_k=top_k,
-        )
-
-        if not include_parents:
-            return results
-
-        # Fetch parent chunks for context
-        # This would require additional DB queries
-        # For now, use context_before/context_after from metadata
-
-        return results
-
-
-class SimpleRetriever:
-    """
-    Simplified retriever using only vector search.
-
-    Use this for quick demos or when Cohere reranking is not available.
-    """
-
-    def __init__(
-        self,
-        vector_store: VectorStore,
-        embedding_service: EmbeddingService,
-    ):
-        self.store = vector_store
-        self.embeddings = embedding_service
-
-    def retrieve(
-        self,
-        query: str,
-        top_k: int = 10,
-        client_id: Optional[str] = None,
-        document_id: Optional[str] = None,
-    ) -> list[SearchResult]:
-        """Simple vector search without reranking."""
-        query_embedding = self.embeddings.embed_query(query)
-
-        return self.store.search(
-            query_embedding=query_embedding,
-            top_k=top_k,
-            client_id=client_id,
-            document_id=document_id,
-        )
 
 
 # Factory function
@@ -1160,15 +1102,12 @@ def get_retriever(
     Args:
         vector_store: Vector store instance
         embedding_service: Embedding service instance
-        use_hybrid: If True, use hybrid search with reranking
+        use_hybrid: Unused, kept for backward compatibility. Always returns HybridRetriever.
 
     Returns:
-        Configured retriever instance
+        Configured HybridRetriever instance
     """
-    if use_hybrid:
-        return HybridRetriever(vector_store, embedding_service)
-    else:
-        return SimpleRetriever(vector_store, embedding_service)
+    return HybridRetriever(vector_store, embedding_service)
 
 
 # CLI for testing

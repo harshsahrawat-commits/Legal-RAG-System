@@ -1,12 +1,8 @@
 import axios from 'axios'
 import { useStore } from './store'
 import type {
-  QueryResponse,
   DocumentInfo,
   UploadResponse,
-  TenantConfig,
-  TenantConfigUpdate,
-  HealthResponse,
   SourceToggles,
   AuthResponse,
   UserInfo,
@@ -48,8 +44,6 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 export const api = {
-  health: () => client.get<HealthResponse>('/api/v1/health'),
-
   // Auth
   auth: {
     google: (idToken: string) =>
@@ -106,14 +100,6 @@ export const api = {
     messages: (id: string) =>
       client.get<MessageRecord[]>(`/api/v1/conversations/${id}/messages`),
   },
-
-  query: (query: string, documentId?: string, topK?: number, sourceToggles?: SourceToggles) =>
-    client.post<QueryResponse>('/api/v1/query', {
-      query,
-      document_id: documentId || null,
-      top_k: topK || 10,
-      ...(sourceToggles ? { sources: sourceToggles } : {}),
-    }),
 
   /**
    * Streaming query via Server-Sent Events.
@@ -189,7 +175,7 @@ export const api = {
             if (line.startsWith('event: ')) {
               currentEvent = line.slice(7)
             } else if (line.startsWith('data: ')) {
-              currentData = line.slice(6)
+              currentData = currentData ? currentData + line.slice(6) : line.slice(6)
             } else if (line === '' && currentEvent && currentData) {
               try {
                 const parsed = JSON.parse(currentData)
@@ -220,10 +206,5 @@ export const api = {
       })
 
     return { abort: () => controller.abort() }
-  },
-
-  config: {
-    get: () => client.get<TenantConfig>('/api/v1/config'),
-    update: (data: TenantConfigUpdate) => client.put<TenantConfig>('/api/v1/config', data),
   },
 }
