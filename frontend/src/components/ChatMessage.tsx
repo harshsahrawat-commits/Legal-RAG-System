@@ -557,7 +557,7 @@ function ChatMessage({ message, isStreaming = false }: Props) {
   )
 
   const isValidCitation = (num: number) => {
-    return message.sources && num >= 1 && num <= message.sources.length
+    return !!message.sources && num >= 1 && num <= message.sources.length
   }
 
   const handleCitationClick = useCallback((num: number) => {
