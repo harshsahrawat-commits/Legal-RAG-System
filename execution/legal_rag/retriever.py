@@ -303,6 +303,7 @@ class HybridRetriever:
         self._reranker = None
         self._llm_client = None  # Cached OpenAI client for answer-quality tasks
         self._enhancement_llm_client = None  # Faster model for query enhancement
+        self._alt_embedding_services = {}  # Cached alt embedding services by model name
 
         # Quick Win #4: Reranking cache to reduce API costs (bounded LRU)
         self._rerank_cache = OrderedDict()
@@ -368,6 +369,25 @@ class HybridRetriever:
                 timeout=30.0,
             )
         return self._enhancement_llm_client
+
+    def _get_alt_embedding_service(self, model_name: str):
+        """Get or create an embedding service for an alternate embedding model.
+
+        Used when searching sources ingested with a different embedding model
+        than the tenant's default (e.g., CyLaw uses voyage-multilingual-2
+        while an English tenant defaults to voyage-law-2).
+        """
+        if model_name not in self._alt_embedding_services:
+            from .embeddings import get_embedding_service
+            if model_name == "voyage-multilingual-2":
+                alt_config = TenantLanguageConfig.for_language("el")
+            else:
+                alt_config = TenantLanguageConfig.for_language("en")
+            self._alt_embedding_services[model_name] = get_embedding_service(
+                provider=alt_config.embedding_provider,
+                language_config=alt_config,
+            )
+        return self._alt_embedding_services[model_name]
 
     def _classify_query(self, query: str, lang: Optional[str] = None) -> str:
         """
@@ -578,6 +598,14 @@ class HybridRetriever:
         "eurlex": "en",  # EUR-Lex docs are in English
     }
 
+    # Source embedding model mapping: which model was used to embed each source's documents.
+    # Must match the model used during batch ingestion for meaningful cosine similarity.
+    SOURCE_EMBEDDING_MODELS = {
+        "cylaw": "voyage-multilingual-2",  # Greek legal docs
+        "hudoc": "voyage-law-2",           # English ECHR docs
+        "eurlex": "voyage-law-2",          # English EU law docs
+    }
+
     def _translate_query(self, query: str, target_lang: str) -> Optional[str]:
         """Translate a query to the target language for cross-lingual retrieval.
 
@@ -752,7 +780,7 @@ class HybridRetriever:
                 hyde_doc = futures["hyde"].result()
                 if hyde_doc != query:
                     hyde_embedding = self.embeddings.embed_query(hyde_doc)
-                    search_embeddings.append(("hyde", hyde_embedding))
+                    search_embeddings.append(("hyde", hyde_doc, hyde_embedding))
 
             if "variants" in futures:
                 variants = futures["variants"].result()
@@ -769,14 +797,33 @@ class HybridRetriever:
             search_queries = search_queries[:3]
 
         # ============================================================
-        # Stage 1: PARALLEL search — embed all queries, then run all
-        # vector + keyword searches concurrently via ThreadPoolExecutor.
-        # This replaces the old sequential loop that was the #1 bottleneck.
+        # Stage 1: PARALLEL search — per-source-model embeddings
+        #
+        # Different sources may have been ingested with different embedding
+        # models (e.g. CyLaw with voyage-multilingual-2, HUDOC with
+        # voyage-law-2). We group sources by model and generate the
+        # correct query embedding for each group so cosine similarity
+        # is computed within the same vector space.
         # ============================================================
         all_vector_results = []
         all_keyword_results = []
 
-        # 1a. Batch-compute embeddings for all search queries
+        # 1a. Group source origins by their ingestion embedding model
+        primary_model = self._language_config.embedding_model
+        model_groups = {}  # {model_name: [source_origins]}
+        if source_origins:
+            for s in source_origins:
+                model = self.SOURCE_EMBEDDING_MODELS.get(s, primary_model)
+                model_groups.setdefault(model, []).append(s)
+        # Family and session docs are user-uploaded → use tenant's primary model.
+        # Ensure a primary model group exists when these are active.
+        if (family_ids or conversation_id) and primary_model not in model_groups:
+            model_groups[primary_model] = []
+        # Fallback: no sources and no families → search everything with primary model
+        if not model_groups:
+            model_groups[primary_model] = None
+
+        # 1b. Batch-compute embeddings for primary model
         query_embeddings = []
         for i, sq in enumerate(search_queries):
             if i == 0 and sq == query:
@@ -787,49 +834,73 @@ class HybridRetriever:
         # Reduced top_k for variant queries (they add diversity, not depth)
         variant_top_k = max(effective_config.vector_top_k // 2, 15)
 
-        # 1b. Build search tasks: (type, callable) pairs
-        search_common = dict(
-            client_id=client_id,
-            document_id=document_id,
-            source_origins=source_origins,
-            family_ids=family_ids,
-            conversation_id=conversation_id,
-        )
-
+        # 1c. Build search tasks per embedding-model group
         search_tasks = []  # (result_type, callable)
 
-        for i, (sq, emb) in enumerate(zip(search_queries, query_embeddings)):
-            tk = effective_config.vector_top_k if i == 0 else variant_top_k
-            # Vector search
-            search_tasks.append(("vector", lambda e=emb, t=tk: self.store.search(
-                query_embedding=e, top_k=t, **search_common,
-            )))
-            # Keyword search
-            search_tasks.append(("keyword", lambda q=sq, t=tk: self.store.keyword_search(
-                query=q, top_k=t, fts_language=effective_fts, **search_common,
-            )))
+        for model_name, group_sources in model_groups.items():
+            # Compute embeddings for this group
+            if model_name == primary_model:
+                group_embeddings = query_embeddings
+                group_hyde = [(name, emb) for name, _text, emb in search_embeddings]
+            else:
+                alt_service = self._get_alt_embedding_service(model_name)
+                group_embeddings = [alt_service.embed_query(sq) for sq in search_queries]
+                group_hyde = [(name, alt_service.embed_query(text))
+                              for name, text, _emb in search_embeddings]
 
-        # HyDE vector searches
-        for name, hyde_emb in search_embeddings:
-            search_tasks.append(("vector", lambda e=hyde_emb: self.store.search(
-                query_embedding=e, top_k=variant_top_k, **search_common,
-            )))
+            # FTS language for this group (based on source document languages)
+            if group_sources:
+                group_langs = set(self.SOURCE_LANGUAGES.get(s, "en") for s in group_sources)
+                group_fts = "greek" if "el" in group_langs else "english"
+            else:
+                group_fts = effective_fts
 
-        # Cross-lingual searches: only target sources matching the OTHER language
+            # Only include family_ids/conversation_id with the tenant's primary model
+            include_extras = (model_name == primary_model)
+            group_common = dict(
+                client_id=client_id,
+                document_id=document_id,
+                source_origins=group_sources,
+                family_ids=family_ids if include_extras else None,
+                conversation_id=conversation_id if include_extras else None,
+            )
+
+            for i, (sq, emb) in enumerate(zip(search_queries, group_embeddings)):
+                tk = effective_config.vector_top_k if i == 0 else variant_top_k
+                search_tasks.append(("vector", lambda e=emb, t=tk, gc=group_common: self.store.search(
+                    query_embedding=e, top_k=t, **gc,
+                )))
+                search_tasks.append(("keyword", lambda q=sq, t=tk, f=group_fts, gc=group_common: self.store.keyword_search(
+                    query=q, top_k=t, fts_language=f, **gc,
+                )))
+
+            # HyDE vector searches for this group
+            for _name, hyde_emb in group_hyde:
+                search_tasks.append(("vector", lambda e=hyde_emb, gc=group_common: self.store.search(
+                    query_embedding=e, top_k=variant_top_k, **gc,
+                )))
+
+        # Cross-lingual searches: translate query for cross-language sources
         if translated_query:
             cross_fts = "greek" if other_lang == "el" else "english"
             cross_sources = [s for s in (source_origins or [])
                             if self.SOURCE_LANGUAGES.get(s, "en") == other_lang]
             if cross_sources:
                 logger.info(f"Cross-lingual search ({effective_lang}->{other_lang}): '{translated_query[:60]}' sources={cross_sources}")
+                # Use the embedding model that matches the cross-lingual target sources
+                cross_model = self.SOURCE_EMBEDDING_MODELS.get(cross_sources[0], primary_model)
+                if cross_model != primary_model:
+                    cross_emb_service = self._get_alt_embedding_service(cross_model)
+                    cross_embedding = cross_emb_service.embed_query(translated_query)
+                else:
+                    cross_embedding = self.embeddings.embed_query(translated_query)
                 cross_common = dict(
                     client_id=client_id,
                     document_id=document_id,
                     source_origins=cross_sources,
-                    family_ids=family_ids,
-                    conversation_id=conversation_id,
+                    family_ids=None,
+                    conversation_id=None,
                 )
-                cross_embedding = self.embeddings.embed_query(translated_query)
                 search_tasks.append(("vector", lambda e=cross_embedding: self.store.search(
                     query_embedding=e, top_k=variant_top_k, **cross_common,
                 )))
@@ -837,7 +908,7 @@ class HybridRetriever:
                     query=q, top_k=variant_top_k, fts_language=f, **cross_common,
                 )))
 
-        # 1c. Execute all search tasks in parallel
+        # 1d. Execute all search tasks in parallel
         # Cap workers at 6 to stay within Neon Postgres connection limits
         logger.info(f"Running {len(search_tasks)} search tasks in parallel")
         with ThreadPoolExecutor(max_workers=min(len(search_tasks), 6)) as executor:
