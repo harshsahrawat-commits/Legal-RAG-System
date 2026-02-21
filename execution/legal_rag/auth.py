@@ -15,21 +15,31 @@ from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRY_HOURS = int(os.getenv("JWT_EXPIRY_HOURS", "168"))  # 7 days default
 
-if not GOOGLE_CLIENT_ID:
-    raise RuntimeError(
-        "GOOGLE_CLIENT_ID environment variable is not set. "
-        "Set it in .env or as an environment variable."
-    )
-if not JWT_SECRET:
-    raise RuntimeError(
-        "JWT_SECRET environment variable is not set. "
-        "Generate a random secret string and set it in .env or as an environment variable."
-    )
+
+def _get_google_client_id() -> str:
+    val = os.getenv("GOOGLE_CLIENT_ID", "")
+    if not val:
+        raise RuntimeError(
+            "GOOGLE_CLIENT_ID environment variable is not set. "
+            "Set it in .env or as an environment variable."
+        )
+    return val
+
+
+def _get_jwt_secret() -> str:
+    val = os.getenv("JWT_SECRET", "")
+    if not val:
+        raise RuntimeError(
+            "JWT_SECRET environment variable is not set. "
+            "Generate a random secret string and set it in .env or as an environment variable."
+        )
+    return val
+
+
+def _get_jwt_expiry_hours() -> int:
+    return int(os.getenv("JWT_EXPIRY_HOURS", "168"))  # 7 days default
 
 
 def verify_google_token(token: str) -> Optional[dict]:
@@ -44,7 +54,7 @@ def verify_google_token(token: str) -> Optional[dict]:
     """
     try:
         idinfo = id_token.verify_oauth2_token(
-            token, google_requests.Request(), GOOGLE_CLIENT_ID
+            token, google_requests.Request(), _get_google_client_id()
         )
 
         # Verify issuer
@@ -83,9 +93,9 @@ def create_session_jwt(user_id: str, email: str, name: str) -> str:
         "email": email,
         "name": name,
         "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=_get_jwt_expiry_hours()),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
 def verify_session_jwt(token: str) -> Optional[dict]:
@@ -96,7 +106,7 @@ def verify_session_jwt(token: str) -> Optional[dict]:
         Dict with user_id, email, name if valid; None if invalid/expired
     """
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
         return {
             "user_id": payload["sub"],
             "email": payload.get("email", ""),
