@@ -41,6 +41,14 @@ from .auth import verify_google_token, create_session_jwt, verify_session_jwt
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Startup diagnostic: check critical env vars are visible
+_jwt_set = bool(os.getenv("JWT_SECRET", ""))
+_gcid_set = bool(os.getenv("GOOGLE_CLIENT_ID", ""))
+_db_set = bool(os.getenv("POSTGRES_URL", "") or os.getenv("DATABASE_URL", ""))
+print(f"[STARTUP] ENV CHECK: JWT_SECRET={'SET' if _jwt_set else 'MISSING'}, "
+      f"GOOGLE_CLIENT_ID={'SET' if _gcid_set else 'MISSING'}, "
+      f"DATABASE={'SET' if _db_set else 'MISSING'}")
+
 # Greek Unicode range regex for per-query language detection
 _GREEK_RE = re.compile(r'[\u0370-\u03FF\u1F00-\u1FFF]')
 
