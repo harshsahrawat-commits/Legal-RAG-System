@@ -65,5 +65,11 @@ frontend/.env.development
 Current_version.md
 Legal_RAG_System_Architecture_v2.pdf
 
+# AI agent instructions (local workflow only)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+directives/
+
 # Database backups
 backups/
