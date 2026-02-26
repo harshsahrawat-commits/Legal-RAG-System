@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Loader2, MessageSquare, Sparkles, Plus, SlidersHorizontal } from 'lucide-react'
+import { Send, Loader2, MessageSquare, Sparkles, Plus, SlidersHorizontal, Search } from 'lucide-react'
 import { api } from '../api'
 import ChatMessage from './ChatMessage'
 import SourceTogglePopover from './SourceTogglePopover'
+import ResearchFilters from './ResearchFilters'
 import { useStore } from '../store'
 
 const MAX_INPUT_LENGTH = 2000
@@ -24,6 +25,9 @@ export default function ChatInterface() {
   const activeConversationId = useStore((s) => s.activeConversationId)
   const setActiveConversationId = useStore((s) => s.setActiveConversationId)
   const setConversations = useStore((s) => s.setConversations)
+  const researchMode = useStore((s) => s.researchMode)
+  const setResearchMode = useStore((s) => s.setResearchMode)
+  const researchFilters = useStore((s) => s.researchFilters)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sourcePopoverOpen, setSourcePopoverOpen] = useState(false)
@@ -113,10 +117,12 @@ export default function ChatInterface() {
       undefined,
       sourceToggles,
       activeConversationId ?? undefined,
+      researchMode,
+      researchMode ? researchFilters : undefined,
     )
 
     abortRef.current = handle
-  }, [loading, setMessages, sourceToggles, activeConversationId, setActiveConversationId, setConversations])
+  }, [loading, setMessages, sourceToggles, activeConversationId, setActiveConversationId, setConversations, researchMode, researchFilters])
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -217,6 +223,28 @@ export default function ChatInterface() {
         ))}
       </div>
 
+      {/* Research mode indicator */}
+      {researchMode && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 24px',
+          background: 'var(--accent-dim)',
+          borderBottom: '1px solid var(--border)',
+          fontSize: 11,
+          fontWeight: 500,
+          fontFamily: 'var(--font-mono)',
+          color: 'var(--accent)',
+          textTransform: 'uppercase' as const,
+          letterSpacing: '1px',
+          flexShrink: 0,
+        }}>
+          <Search size={12} />
+          Legal Research Mode Active
+        </div>
+      )}
+
       {/* Session file indicator */}
       {sessionFileName && (
         <div style={styles.sessionChip}>
@@ -230,6 +258,9 @@ export default function ChatInterface() {
           </button>
         </div>
       )}
+
+      {/* Research filters panel */}
+      {researchMode && <ResearchFilters />}
 
       <form onSubmit={handleSubmit} style={styles.inputBar}>
         {/* Upload button */}
@@ -271,6 +302,20 @@ export default function ChatInterface() {
           style={styles.textarea}
           disabled={loading}
         />
+
+        {/* Research mode toggle */}
+        <button
+          type="button"
+          style={{
+            ...styles.iconBtn,
+            ...(researchMode ? { background: 'var(--accent-dim)', color: 'var(--accent)' } : {}),
+          }}
+          onClick={() => setResearchMode(!researchMode)}
+          title={researchMode ? 'Switch to standard mode' : 'Switch to research mode'}
+        >
+          <Search size={18} />
+          {researchMode && <span style={styles.indicatorDot} />}
+        </button>
 
         {/* Source settings button */}
         <div style={{ position: 'relative' as const }}>

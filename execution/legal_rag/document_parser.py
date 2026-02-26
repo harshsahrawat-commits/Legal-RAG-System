@@ -26,6 +26,8 @@ from .language_patterns import (
     PARTY_PATTERNS,
     JURISDICTION_PATTERNS,
     TITLE_LETTER_REGEX,
+    OUTCOME_PATTERNS,
+    COURT_LEVEL_PATTERNS,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,12 @@ class LegalMetadata:
     page_count: int = 0
     file_path: str = ""
     created_at: datetime = field(default_factory=datetime.now)
+    # Case law outcome fields (populated by _extract_case_outcome)
+    court_level: Optional[str] = None           # "Supreme", "Appeal", "Administrative", "First Instance"
+    case_number: Optional[str] = None           # e.g., "123/2020", "C-123/20"
+    violation_found: Optional[bool] = None      # True/False/None
+    annulment_granted: Optional[bool] = None    # True/False/None
+    appeal_outcome: Optional[str] = None        # "allowed", "dismissed", None
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +63,11 @@ class LegalMetadata:
             "page_count": self.page_count,
             "file_path": self.file_path,
             "created_at": self.created_at.isoformat(),
+            "court_level": self.court_level,
+            "case_number": self.case_number,
+            "violation_found": self.violation_found,
+            "annulment_granted": self.annulment_granted,
+            "appeal_outcome": self.appeal_outcome,
         }
 
 
@@ -244,6 +257,15 @@ class LegalDocumentParser:
         metadata.jurisdiction = self._extract_jurisdiction(raw_text)
         metadata.parties = self._extract_parties(raw_text, doc_type)
         metadata.effective_date = self._extract_date(raw_text)
+
+        # Extract case law outcome metadata (court_level, violation, annulment, case_number)
+        case_outcome = self._extract_case_outcome(raw_text, doc_type)
+        if case_outcome:
+            metadata.court_level = case_outcome.get("court_level")
+            metadata.case_number = case_outcome.get("case_number")
+            metadata.violation_found = case_outcome.get("violation_found")
+            metadata.annulment_granted = case_outcome.get("annulment_granted")
+            metadata.appeal_outcome = case_outcome.get("appeal_outcome")
 
         return ParsedDocument(
             metadata=metadata,
@@ -645,6 +667,71 @@ class LegalDocumentParser:
                         continue
 
         return None
+
+    def _extract_case_outcome(self, text: str, doc_type: str) -> dict:
+        """
+        Extract structured outcome and court-level metadata from case law.
+
+        Checks the last ~20% of the document text for outcome indicators
+        (violations, annulments, appeals) and the first ~20% for court level.
+
+        Args:
+            text: Full document text
+            doc_type: Document type from _detect_document_type()
+
+        Returns:
+            dict with keys: court_level, case_number, violation_found,
+            annulment_granted, appeal_outcome. Only present if detected.
+        """
+        if doc_type != "case_law":
+            return {}
+
+        outcome = {}
+        lang_outcome = OUTCOME_PATTERNS.get(self._lang, OUTCOME_PATTERNS["en"])
+        lang_court = COURT_LEVEL_PATTERNS.get(self._lang, COURT_LEVEL_PATTERNS["en"])
+
+        # Outcomes are typically in the last 20% of the document (holdings/dispositif)
+        tail_start = int(len(text) * 0.8)
+        tail = text[tail_start:]
+
+        # Check for violation (check negation first — "no violation" is more specific)
+        if any(re.search(p, tail) for p in lang_outcome["no_violation"]):
+            outcome["violation_found"] = False
+        elif any(re.search(p, tail) for p in lang_outcome["violation_found"]):
+            outcome["violation_found"] = True
+
+        # Check for annulment
+        if any(re.search(p, tail) for p in lang_outcome["annulment_granted"]):
+            outcome["annulment_granted"] = True
+            outcome["appeal_outcome"] = "allowed"
+        elif any(re.search(p, tail) for p in lang_outcome["appeal_dismissed"]):
+            outcome["annulment_granted"] = False
+            outcome["appeal_outcome"] = "dismissed"
+
+        # Court level is typically in the first 20% (header/title area)
+        head = text[:int(len(text) * 0.2)]
+        for level, patterns in lang_court.items():
+            if any(re.search(p, head) for p in patterns):
+                outcome["court_level"] = level
+                break
+
+        # Extract case number from first 2000 chars
+        case_num_patterns = [
+            r"(?i)(?:case\s+)?(?:no\.?\s*)?(\d{1,5}[/-]\d{2,4})",
+            r"(?i)application\s+no\.?\s*(\d{1,7}/\d{2,4})",
+            r"(?i)αρ\.\s*(\d{1,5}/\d{2,4})",
+            r"(?i)υπόθεση\s+(?:αρ\.?\s*)?(\d{1,5}/\d{2,4})",
+        ]
+        for pattern in case_num_patterns:
+            match = re.search(pattern, text[:2000])
+            if match:
+                outcome["case_number"] = match.group(1)
+                break
+
+        if outcome:
+            logger.info(f"  Extracted case outcome: {outcome}")
+
+        return outcome
 
 
 # CLI for testing

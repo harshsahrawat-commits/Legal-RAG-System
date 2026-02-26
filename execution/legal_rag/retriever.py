@@ -27,6 +27,7 @@ try:
         PARAGRAPH_REFERENCE_PATTERNS,
         LLM_PROMPTS,
         CROSS_LINGUAL_PROMPTS,
+        LEGAL_RESEARCH_SIGNALS,
     )
 except ImportError:
     from vector_store import VectorStore, SearchResult
@@ -37,6 +38,7 @@ except ImportError:
         PARAGRAPH_REFERENCE_PATTERNS,
         LLM_PROMPTS,
         CROSS_LINGUAL_PROMPTS,
+        LEGAL_RESEARCH_SIGNALS,
     )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,16 @@ QUERY_CONFIGS = {
         "use_hyde": False,
         "use_multi_query": True,
         "description": "Default queries - expansion + multi-query"
+    },
+    "legal_research": {
+        "use_query_expansion": True,
+        "use_hyde": False,
+        "use_multi_query": True,
+        "use_diversity_penalty": False,
+        "force_rerank": True,
+        "metadata_filter": True,
+        "case_level_aggregation": True,
+        "description": "Legal research mining - comprehensive filtered retrieval"
     },
 }
 
@@ -394,20 +406,27 @@ class HybridRetriever:
         Classify query type for adaptive processing (language-aware).
 
         Different query types use different retrieval pipelines:
+        - legal_research: Jurisprudence mining — comprehensive filtered retrieval
         - simple: Very short queries (≤3 words, no question words) - skip all enhancement
         - factual: "What/who/when/where is" - use expansion only
         - analytical: "Explain/analyze/compare/why" - use full enhancement
         - standard: Default - expansion + multi-query
 
         Returns:
-            Query classification: "simple", "factual", "analytical", or "standard"
+            Query classification: "legal_research", "simple", "factual", "analytical", or "standard"
         """
         lang_patterns = QUERY_CLASSIFICATION.get(lang or self._lang, QUERY_CLASSIFICATION["en"])
         effective_lang = lang or self._lang
         query_lower = query.lower().strip()
         word_count = len(query.split())
 
-        # Check for analytical question patterns FIRST (highest priority)
+        # Check for legal research mode FIRST (highest priority)
+        research_signals = LEGAL_RESEARCH_SIGNALS.get(effective_lang, LEGAL_RESEARCH_SIGNALS["en"])
+        if any(re.search(p, query_lower) for p in research_signals):
+            logger.info(f"Query classified as 'legal_research' (signal pattern match)")
+            return "legal_research"
+
+        # Check for analytical question patterns SECOND
         for pattern in lang_patterns["analytical"]:
             if re.search(pattern, query_lower):
                 # Cap Greek queries at "standard" — HyDE generates English-style
@@ -460,8 +479,96 @@ class HybridRetriever:
             use_multi_query=query_config["use_multi_query"],
         )
 
+        # Legal research mode: override diversity and reranking behavior
+        if query_type == "legal_research":
+            effective = replace(
+                effective,
+                use_document_diversity=False,    # Don't suppress same-doc clusters
+                use_smart_reranking=False,        # Always rerank, never smart-skip
+                vector_top_k=80,                  # Much higher for comprehensive results
+                keyword_top_k=60,
+                final_top_k=60,                   # Return more results for case aggregation
+            )
+
         logger.info(f"Using '{query_type}' config: {query_config['description']}")
         return effective
+
+    def _extract_metadata_filters(self, query: str, lang: str = "en") -> Optional[dict]:
+        """
+        Extract structured metadata filters from a legal research query.
+
+        Uses regex-based extraction to parse the query into structured filter
+        fields (document_type, jurisdiction, court_levels, outcome, year_range).
+
+        Returns:
+            dict with filter fields, or None if no filters detected.
+        """
+        filters = {}
+        query_lower = query.lower()
+
+        # Document type detection
+        if any(w in query_lower for w in ["case law", "cases", "decisions", "judgments", "rulings",
+                                           "αποφάσεις", "υποθέσεις"]):
+            filters["document_type"] = "case_law"
+        elif any(w in query_lower for w in ["statute", "legislation", "law", "νόμος", "νομοθεσία"]):
+            filters["document_type"] = "statute"
+        elif any(w in query_lower for w in ["regulation", "κανονισμός"]):
+            filters["document_type"] = "regulation"
+
+        # Jurisdiction detection
+        if any(w in query_lower for w in ["cyprus", "cypriot", "κυπριακ", "κύπρο"]):
+            filters["jurisdiction"] = "Cyprus"
+        elif "echr" in query_lower or "european court of human rights" in query_lower or "εδδα" in query_lower:
+            filters["jurisdiction"] = "ECHR"
+        elif any(w in query_lower for w in ["eu ", "european union", "cjeu", "ευρωπαϊκ"]):
+            filters["jurisdiction"] = "EU"
+
+        # Court level detection
+        court_levels = []
+        court_level_map = {
+            "supreme": "Supreme",
+            "constitutional": "Constitutional",
+            "appeal": "Appeal",
+            "appellate": "Appeal",
+            "administrative": "Administrative",
+            "first instance": "First Instance",
+            "district": "First Instance",
+            "labour": "First Instance",
+            "ανώτατο": "Supreme",
+            "συνταγματικό": "Constitutional",
+            "εφετ": "Appeal",
+            "διοικητικ": "Administrative",
+            "πρωτόδικ": "First Instance",
+        }
+        for keyword, level in court_level_map.items():
+            if keyword in query_lower and level not in court_levels:
+                court_levels.append(level)
+        if court_levels:
+            filters["court_levels"] = court_levels
+
+        # Outcome detection
+        outcome = {}
+        if any(w in query_lower for w in ["violation found", "violation was found",
+                                           "found in violation", "was found in violation",
+                                           "found a violation", "παραβίαση διαπιστώθηκε"]):
+            outcome["violation_found"] = True
+        elif any(w in query_lower for w in ["no violation", "δεν διαπιστώθηκε"]):
+            outcome["violation_found"] = False
+        if any(w in query_lower for w in ["annulment granted", "annulling", "annulled",
+                                           "ακύρωση", "ακυρώθηκε"]):
+            outcome["annulment_granted"] = True
+        if any(w in query_lower for w in ["appeal dismissed", "application rejected",
+                                           "απορρίφθηκε"]):
+            outcome["annulment_granted"] = False
+        if outcome:
+            filters["outcome"] = outcome
+
+        # Year range detection
+        year_match = re.search(r'(\d{4})\s*[-–to]+\s*(\d{4})', query)
+        if year_match:
+            filters["year_range"] = (int(year_match.group(1)), int(year_match.group(2)))
+
+        return filters if filters else None
 
     def _extract_paragraph_reference(self, query: str, lang: Optional[str] = None) -> Optional[int]:
         """
@@ -671,6 +778,7 @@ class HybridRetriever:
         query_embedding: Optional[list[float]] = None,
         source_origins: Optional[list[str]] = None,
         family_ids: Optional[list[str]] = None,
+        metadata_filters: Optional[dict] = None,
         conversation_id: Optional[str] = None,
         query_lang: Optional[str] = None,
     ) -> list[SearchResult]:
@@ -743,6 +851,12 @@ class HybridRetriever:
         # ============================================================
         query_type = self._classify_query(query, effective_lang)
         effective_config = self._get_effective_config(query_type)
+
+        # Extract metadata filters for legal research queries
+        if query_type == "legal_research" and metadata_filters is None:
+            metadata_filters = self._extract_metadata_filters(query, effective_lang)
+            if metadata_filters:
+                logger.info(f"Auto-extracted metadata filters: {metadata_filters}")
 
         # Query Enhancement (based on query classification)
         # Run independent LLM enhancement calls in parallel for speed
@@ -863,6 +977,7 @@ class HybridRetriever:
                 source_origins=group_sources,
                 family_ids=family_ids if include_extras else None,
                 conversation_id=conversation_id if include_extras else None,
+                metadata_filters=metadata_filters,
             )
 
             for i, (sq, emb) in enumerate(zip(search_queries, group_embeddings)):
@@ -958,6 +1073,16 @@ class HybridRetriever:
             )
         else:
             final_results = final_results[:top_k]
+
+        # Stage 5: Case-level aggregation for legal research queries
+        # Groups chunks by document and returns one representative per case
+        query_config_dict = QUERY_CONFIGS.get(query_type, QUERY_CONFIGS["standard"])
+        if query_config_dict.get("case_level_aggregation", False):
+            final_results = self._aggregate_by_case(
+                final_results,
+                max_cases=min(top_k, 10),
+                chunks_per_case=3,
+            )
 
         # ============================================================
         # Cache results for future similar queries
@@ -1103,6 +1228,93 @@ class HybridRetriever:
 
         unique_docs = len(set(r.document_id for r in final))
         logger.info(f"Document diversity: {unique_docs} unique docs in top-{len(final)} (decay={decay_factor})")
+        return final
+
+    def _aggregate_by_case(
+        self,
+        results: list[SearchResult],
+        max_cases: int = 10,
+        chunks_per_case: int = 3,
+    ) -> list[SearchResult]:
+        """
+        Group retrieved chunks by document and re-rank at case level.
+
+        For legal research queries, users need case-level results, not
+        individual paragraph hits. This method:
+        1. Groups all chunks by document_id
+        2. Selects top N chunks per case (by score)
+        3. Computes a case-level score (max chunk score)
+        4. Merges chunk content for richer LLM context
+        5. Returns one representative SearchResult per case
+
+        Args:
+            results: Flat list of SearchResult from retrieval pipeline
+            max_cases: Maximum number of cases to return
+            chunks_per_case: How many top chunks to keep per case
+
+        Returns:
+            List of SearchResult, one per case, with enriched metadata
+        """
+        if not results:
+            return results
+
+        # Step 1: Group chunks by document_id
+        from collections import defaultdict
+        cases: dict[str, list[SearchResult]] = defaultdict(list)
+        for result in results:
+            cases[result.document_id].append(result)
+
+        logger.info(f"Case aggregation: {len(results)} chunks -> {len(cases)} unique cases")
+
+        # Step 2: For each case, select top N chunks and compute case-level score
+        case_representatives = []
+        for doc_id, chunks in cases.items():
+            chunks_sorted = sorted(chunks, key=lambda r: r.score, reverse=True)
+            top_chunks = chunks_sorted[:chunks_per_case]
+
+            # Case-level score = max chunk score
+            case_score = max(c.score for c in top_chunks)
+
+            # Merge chunk contents with section context
+            merged_parts = []
+            for c in top_chunks:
+                section_label = c.section_title or "Untitled Section"
+                merged_parts.append(f"[{section_label}]\n{c.content}")
+            merged_content = "\n\n---\n\n".join(merged_parts)
+
+            # Collect all page numbers across chunks
+            all_pages = sorted(set(
+                p for c in top_chunks for p in (c.page_numbers or [])
+            ))
+
+            # Use the best-scoring chunk as the representative
+            from dataclasses import replace as _replace
+            representative = _replace(
+                top_chunks[0],
+                score=case_score,
+                page_numbers=all_pages,
+                metadata={
+                    **top_chunks[0].metadata,
+                    "case_merged_content": merged_content,
+                    "case_chunk_count": len(chunks),
+                    "case_top_chunk_ids": [c.chunk_id for c in top_chunks],
+                    "case_aggregated": True,
+                },
+            )
+            case_representatives.append(representative)
+
+        # Step 3: Sort cases by case-level score and return top N
+        case_representatives.sort(key=lambda r: r.score, reverse=True)
+        final = case_representatives[:max_cases]
+
+        total_chunks_represented = sum(
+            r.metadata.get("case_chunk_count", 1) for r in final
+        )
+        logger.info(
+            f"Case aggregation: returning {len(final)} cases "
+            f"(representing {total_chunks_represented} total chunks)"
+        )
+
         return final
 
     def _rerank(

@@ -5,6 +5,14 @@ export interface SourceToggles {
   families: string[]  // family UUIDs
 }
 
+export interface MetadataFilters {
+  document_type?: string | null
+  jurisdiction?: string | null
+  court_levels?: string[]
+  year_range?: [number, number] | null
+  outcome?: Record<string, boolean> | null
+}
+
 export interface SourceInfo {
   document_title: string
   section: string

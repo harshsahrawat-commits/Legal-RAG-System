@@ -34,7 +34,7 @@ from .api_models import (
     MoveDocumentRequest,
 )
 from .language_config import TenantLanguageConfig
-from .language_patterns import LLM_PROMPTS
+from .language_patterns import LLM_PROMPTS, LEGAL_RESEARCH_PROMPTS, ADVISORY_PATTERNS
 from .auth import verify_google_token, create_session_jwt, verify_session_jwt
 
 # Load environment variables
@@ -220,6 +220,7 @@ class ServiceContainer:
                 self._store.initialize_tenant_config_schema()
                 self._store.migrate_add_user_auth_schema()
                 self._store.migrate_add_document_families()
+                self._store.migrate_add_outcome_indexes()
             except Exception as e:
                 logger.warning(f"Schema init partial: {e}")
         return self._store
@@ -357,7 +358,8 @@ _ORIGIN_LABELS = {
 
 def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                       query_embedding, services, store, source_origins,
-                      family_ids=None, conversation_id=None, query_lang=None):
+                      family_ids=None, conversation_id=None, query_lang=None,
+                      metadata_filters=None):
     """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex, families, session docs).
 
     All sources are stored in the same pgvector DB with a `source_origin` column.
@@ -377,6 +379,7 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
             family_ids=family_ids,
             conversation_id=conversation_id,
             query_lang=query_lang,
+            metadata_filters=metadata_filters,
         )
         results = [r for r in results if r.hierarchy_path != "Document"]
         if not results:
@@ -453,11 +456,23 @@ def _build_context_string(cited_contents, sources_list):
 
     Returns the context string for the LLM prompt.
     Uses plain text formatting (no markdown) to avoid the LLM mirroring markdown in its output.
+    For case-aggregated results, uses merged content from multiple passages.
     """
     context_parts = []
     for idx, (cc, src) in enumerate(zip(cited_contents, sources_list), 1):
         label = _ORIGIN_LABELS.get(src.source_origin, src.source_origin)
-        context_parts.append(f"[{idx}] ({label}) {cc.citation.short_format()}:\n{cc.content}")
+
+        # Use merged case content if available (case-level aggregation)
+        meta = getattr(cc, 'metadata', None) or {}
+        if isinstance(meta, dict) and meta.get("case_aggregated"):
+            content = meta.get("case_merged_content", cc.content)
+            chunk_count = meta.get("case_chunk_count", 1)
+            context_parts.append(
+                f"[{idx}] ({label}) Case: {cc.citation.short_format()} "
+                f"({chunk_count} relevant passages):\n{content}"
+            )
+        else:
+            context_parts.append(f"[{idx}] ({label}) {cc.citation.short_format()}:\n{cc.content}")
 
     return "\n\n".join(context_parts)
 
@@ -483,6 +498,25 @@ def _clean_answer(text: str) -> str:
     # Collapse triple+ newlines to double
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _strip_advisory_language(text: str, lang: str = "en") -> str:
+    """Post-process LLM output to replace advisory language with neutral phrasing.
+
+    Ensures the system never gives direct legal advice, even if the LLM
+    occasionally slips past prompt instructions.
+    """
+    patterns = ADVISORY_PATTERNS.get(lang, ADVISORY_PATTERNS["en"])
+
+    cleaned = text
+    for pattern, replacement in patterns["replacements"]:
+        cleaned = re.sub(pattern, replacement, cleaned)
+
+    for pattern in patterns["prohibited"]:
+        if re.search(pattern, cleaned):
+            logger.warning(f"Prohibited advisory language detected: {pattern}")
+
+    return cleaned
 
 
 # =============================================================================
@@ -570,6 +604,13 @@ def upload_document(
         shutil.copy2(tmp_path, stored_path)
 
         # Store
+        # Build outcome metadata for JSONB storage
+        outcome_metadata = {}
+        for key in ["court_level", "case_number", "violation_found", "annulment_granted", "appeal_outcome"]:
+            val = getattr(parsed.metadata, key, None)
+            if val is not None:
+                outcome_metadata[key] = val
+
         store.insert_document(
             document_id=parsed.metadata.document_id,
             title=parsed.metadata.title,
@@ -578,6 +619,7 @@ def upload_document(
             jurisdiction=parsed.metadata.jurisdiction,
             file_path=str(stored_path),
             page_count=parsed.metadata.page_count,
+            metadata=outcome_metadata if outcome_metadata else None,
             family_id=family_id,
             upload_scope=upload_scope,
             conversation_id=conversation_id if upload_scope == "session" else None,
@@ -779,6 +821,7 @@ def query_documents(
             temperature=0.2,
         )
         answer = _clean_answer(response.choices[0].message.content or "")
+        answer = _strip_advisory_language(answer, query_lang)
 
     except Exception as e:
         from openai import APITimeoutError
@@ -849,8 +892,16 @@ def query_documents_stream(
     except Exception as e:
         logger.warning(f"Quota check failed (allowing request): {e}")
 
-    # Audit
-    store.log_audit(client_id=client_id, action="query", details={"query": request.query[:200], "sources": _source_toggle_key(sources_cfg)})
+    # Audit (enhanced for research mode)
+    audit_details = {
+        "query": request.query[:200],
+        "sources": _source_toggle_key(sources_cfg),
+    }
+    if request.research_mode:
+        audit_details["research_mode"] = True
+        if request.metadata_filters:
+            audit_details["metadata_filters"] = request.metadata_filters.model_dump(exclude_none=True)
+    store.log_audit(client_id=client_id, action="query", details=audit_details)
 
     def _sse_event(event: str, data) -> str:
         """Format a Server-Sent Event."""
@@ -953,10 +1004,14 @@ def query_documents_stream(
             # Per-query language detection
             query_lang = detect_query_language(request.query)
 
+            # Convert Pydantic MetadataFilters to dict for retriever
+            mf_dict = request.metadata_filters.model_dump(exclude_none=True) if request.metadata_filters else None
+
             cited_contents, all_sources = _retrieve_from_db(
                 request.query, retriever, client_id, request.document_id,
                 request.top_k, original_embedding, services, store, source_origins,
                 family_ids=family_ids, conversation_id=conversation_id, query_lang=query_lang,
+                metadata_filters=mf_dict,
             )
 
             if not all_sources:
@@ -972,18 +1027,52 @@ def query_documents_stream(
             sources_serialized = [s.model_dump() for s in all_sources]
             yield _sse_event("sources", sources_serialized)
 
+            # Classify query to determine which prompt to use
+            query_type = retriever._classify_query(request.query, query_lang)
+
+            # Audit: log retrieval results for legal research queries
+            if request.research_mode or query_type == "legal_research":
+                store.log_audit(
+                    client_id=client_id,
+                    action="legal_research_results",
+                    details={
+                        "query": request.query[:200],
+                        "result_count": len(all_sources),
+                        "metadata_filters": mf_dict,
+                        "query_type": query_type,
+                    },
+                )
+
             # Build LLM context
             context = _build_context_string(cited_contents, all_sources)
             full_answer = ""
             try:
                 llm_client = _container.get_llm_client()
-                system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
+
+                # Select prompt based on query type
+                if query_type == "legal_research":
+                    research_prompts = LEGAL_RESEARCH_PROMPTS.get(query_lang, LEGAL_RESEARCH_PROMPTS["en"])
+                    system_prompt = research_prompts["system"]
+
+                    mf_for_prompt = mf_dict or {}
+                    user_prompt = research_prompts["user_template"].format(
+                        query=request.query,
+                        document_type=mf_for_prompt.get("document_type", "All"),
+                        jurisdiction=mf_for_prompt.get("jurisdiction", "All"),
+                        court_levels=", ".join(mf_for_prompt.get("court_levels", ["All"])),
+                        outcome_filter=str(mf_for_prompt.get("outcome", "None")),
+                        source_count=len(all_sources),
+                        context=context,
+                    )
+                else:
+                    system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
+                    user_prompt = f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."
 
                 stream = llm_client.chat.completions.create(
                     model=lang_config.llm_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
+                        {"role": "user", "content": user_prompt},
                     ],
                     max_tokens=3500,
                     temperature=0.2,
@@ -1008,9 +1097,12 @@ def query_documents_stream(
                 full_answer = fallback
                 yield _sse_event("token", fallback)
 
+            # Strip advisory language before saving (compliance layer)
+            saved_answer = _strip_advisory_language(full_answer, query_lang)
+
             # Cache the full pipeline result
             answer_data = {
-                "answer": full_answer,
+                "answer": saved_answer,
                 "sources": sources_serialized,
             }
             retriever._result_cache.set(
@@ -1028,7 +1120,7 @@ def query_documents_stream(
 
             # Save messages to DB
             elapsed = (time.time() - start_time) * 1000
-            _save_messages(conversation_id, request.query, full_answer, sources_serialized, elapsed)
+            _save_messages(conversation_id, request.query, saved_answer, sources_serialized, elapsed)
             _auto_title(conversation_id, request.query)
 
             yield _sse_event("done", {"latency_ms": elapsed, "conversation_id": conversation_id})

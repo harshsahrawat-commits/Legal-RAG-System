@@ -250,6 +250,154 @@ QUERY_CLASSIFICATION = {
 }
 
 # =============================================================================
+# Legal Research Mode Detection Patterns
+# =============================================================================
+
+LEGAL_RESEARCH_SIGNALS = {
+    "en": [
+        r"find\s+all\s+(decisions|cases|judgments|rulings)",
+        r"limit\s+(to|results\s+to)\s+(cases|decisions)\s+where",
+        r"all\s+(supreme|appeal|administrative|constitutional)\s+(court\s+)?decisions",
+        r"(violation|annulment)\s+(found|granted)",
+        r"cases\s+where\s+(state|government)\s+was\s+found",
+        r"jurisprudence\s+(of|on|regarding)",
+        r"court[- ]?level\s+filter",
+        r"(grouped|organized)\s+by\s+court",
+        r"\ball\s+years\b",
+        r"doctrine\s+of\s+necessity",
+        r"(find|identify|list)\s+(relevant\s+)?jurisprudence",
+        r"(supreme|appeal|first\s+instance)\s+level",
+        r"only\s+(cases|decisions)\s+where",
+        r"all\s+decisions\s+of\s+the",
+        r"annulling\s+administrative\s+acts",
+    ],
+    "el": [
+        r"βρες\s+όλες\s+τις\s+αποφάσεις",
+        r"νομολογία\s+(του|σχετικά|για|επί)",
+        r"νομολογία",
+        r"παραβίαση\s+διαπιστ[ωώ]θηκε",
+        r"ακύρωση\s+χορηγ[ηή]θηκε",
+        r"υποθέσεις\s+όπου",
+        r"όλες\s+οι\s+αποφάσεις\s+(του|της)",
+        r"(ανώτατο|εφετ|διοικητικ)\w*\s+δικαστήρι",
+        r"δόγμα\s+της\s+ανάγκης",
+    ],
+}
+
+# =============================================================================
+# Outcome Extraction Patterns (for case law ingestion)
+# =============================================================================
+
+OUTCOME_PATTERNS = {
+    "en": {
+        "violation_found": [
+            r"(?i)the\s+court\s+finds?\s+a\s+violation",
+            r"(?i)there\s+has\s+been\s+a\s+violation",
+            r"(?i)unanimously.{0,30}violation",
+            r"(?i)holds?\s+that\s+there\s+(has\s+been|was)\s+a\s+violation",
+            r"(?i)violation\s+of\s+article",
+            r"(?i)by\s+\w+\s+votes?\s+to\s+\w+.{0,20}violation",
+            r"(?i)finds?\s+a\s+breach\s+of",
+        ],
+        "no_violation": [
+            r"(?i)no\s+violation\s+of",
+            r"(?i)the\s+court\s+finds?\s+no\s+violation",
+            r"(?i)does\s+not\s+constitute\s+a\s+violation",
+            r"(?i)there\s+has\s+been\s+no\s+violation",
+            r"(?i)no\s+breach\s+of",
+        ],
+        "annulment_granted": [
+            r"(?i)annul(led|ment)\s+(is\s+)?granted",
+            r"(?i)act\s+(is\s+)?(hereby\s+)?annulled",
+            r"(?i)decision\s+(is\s+)?(hereby\s+)?set\s+aside",
+            r"(?i)appeal\s+(is\s+)?(hereby\s+)?allowed",
+            r"(?i)administrative\s+act.{0,30}annul",
+            r"(?i)(quashed|overturned|reversed)",
+        ],
+        "appeal_dismissed": [
+            r"(?i)appeal\s+(is\s+)?(hereby\s+)?dismissed",
+            r"(?i)application\s+(is\s+)?(hereby\s+)?rejected",
+            r"(?i)claim\s+(is\s+)?(hereby\s+)?dismissed",
+            r"(?i)petition\s+(is\s+)?(hereby\s+)?denied",
+            r"(?i)application\s+(is\s+)?declared\s+inadmissible",
+        ],
+    },
+    "el": {
+        "violation_found": [
+            r"παραβίαση\s+διαπιστ[ωώ]θηκε",
+            r"το\s+δικαστήριο\s+αποφ[αά]σισε.*παραβίαση",
+            r"κρίνει\s+ότι\s+υπήρξε\s+παραβίαση",
+            r"παραβιάστηκε\s+το\s+άρθρο",
+        ],
+        "no_violation": [
+            r"δεν\s+διαπιστ[ωώ]θηκε\s+παραβίαση",
+            r"δεν\s+υπήρξε\s+παραβίαση",
+            r"δεν\s+συνιστά\s+παραβίαση",
+        ],
+        "annulment_granted": [
+            r"ακυρ[ωώ](νεται|θηκε|ση)",
+            r"η\s+πράξη\s+ακυρ[ωώ]νεται",
+            r"η\s+έφεση\s+γίνεται\s+δεκτή",
+            r"η\s+προσφυγή\s+γίνεται\s+δεκτή",
+        ],
+        "appeal_dismissed": [
+            r"η\s+(έφεση|προσφυγή|αίτηση)\s+απορρίπτεται",
+            r"απορρίπτεται",
+            r"κρίνεται\s+απαράδεκτ[ηο]",
+        ],
+    },
+}
+
+COURT_LEVEL_PATTERNS = {
+    "en": {
+        "Supreme": [
+            r"(?i)supreme\s+court",
+            r"(?i)supreme\s+constitutional\s+court",
+        ],
+        "Constitutional": [
+            r"(?i)constitutional\s+court",
+        ],
+        "Appeal": [
+            r"(?i)appeal(s)?\s+court",
+            r"(?i)court\s+of\s+appeal",
+            r"(?i)appellate\s+court",
+            r"(?i)administrative\s+court\s+of\s+appeal",
+        ],
+        "Administrative": [
+            r"(?i)administrative\s+court(?!\s+of\s+appeal)",
+        ],
+        "First Instance": [
+            r"(?i)first\s+instance",
+            r"(?i)district\s+court",
+            r"(?i)labour\s+(dispute\s+)?court",
+            r"(?i)family\s+court",
+        ],
+    },
+    "el": {
+        "Supreme": [
+            r"ανώτατο\s+δικαστήριο",
+            r"ανώτατο\s+συνταγματικό\s+δικαστήριο",
+        ],
+        "Constitutional": [
+            r"συνταγματικό\s+δικαστήριο",
+        ],
+        "Appeal": [
+            r"εφετείο",
+            r"δευτεροβάθμιο\s+δικαστήριο",
+            r"διοικητικό\s+εφετείο",
+        ],
+        "Administrative": [
+            r"διοικητικό\s+δικαστήριο(?!\s+εφετείο)",
+        ],
+        "First Instance": [
+            r"πρωτόδικ\w+\s+δικαστήριο",
+            r"επαρχιακό\s+δικαστήριο",
+            r"δικαστήριο\s+εργατικών\s+διαφορών",
+        ],
+    },
+}
+
+# =============================================================================
 # Paragraph Reference Patterns (for retriever paragraph extraction)
 # =============================================================================
 
@@ -447,6 +595,165 @@ Remember: absolutely no asterisks, no lists, no headers, no markdown formatting 
 ΚΑΘΕ πραγματικός ισχυρισμός ΠΡΕΠΕΙ να έχει παραπομπή [N]. Επαγγελματική νομική γλώσσα μόνο.
 
 Θυμηθείτε: απολύτως κανένας αστερίσκος, καμία λίστα, καμία επικεφαλίδα, καμία μορφοποίηση markdown.""",
+    },
+}
+
+# =============================================================================
+# Legal Research Mode Prompts (structured output for jurisprudence mining)
+# =============================================================================
+
+LEGAL_RESEARCH_PROMPTS = {
+    "en": {
+        "system": """You are a legal research assistant specializing in Cyprus law, ECHR case law, and EU legislation.
+
+You MUST structure your response using the following sections. Use these EXACT section headers:
+
+RELEVANT LEGISLATION
+List applicable laws with article numbers and brief descriptions. Cite the source database (CyLaw, EUR-Lex).
+
+RELEVANT CASE LAW
+Group cases by court level. Use this hierarchy:
+- Supreme Court / Supreme Constitutional Court
+- Court of Appeal / Administrative Court of Appeal
+- Administrative Court / First Instance / District Court
+- ECHR (European Court of Human Rights)
+- CJEU (Court of Justice of the European Union)
+For each case, include: court name, case number (if available), and a one-sentence summary of the holding.
+
+CASE SUMMARIES
+For each major case found in the sources, provide:
+- Court and case number
+- Key facts (2-3 sentences)
+- Holding (what the court decided)
+- Reasoning (why the court decided this way)
+
+LEGAL ANALYSIS
+Synthesize the findings. How do the cases and legislation interact? What legal principles emerge?
+
+STRENGTHS AND WEAKNESSES
+Of the legal position implied by the query. What arguments are strong? What are potential counterarguments?
+
+SUGGESTED STRUCTURE OF CLAIM
+If the query implies a potential legal action, outline the recommended structure.
+
+CRITICAL RULES:
+1. ONLY cite sources provided in the context below. Never fabricate cases or citations.
+2. Use Cyprus citation format where applicable: Law Number/Year, Article X.
+3. Clearly indicate which database each source comes from (CyLaw, HUDOC, EUR-Lex).
+4. Use professional legal language: "The court held..." NOT "You should..."
+5. If a section has no relevant information from the sources, write: "No relevant information found in the provided sources."
+6. EVERY factual claim MUST have a citation [N].
+7. Do NOT use asterisks (*) for formatting. Use the section headers as written above.
+8. End your response with: "This is legal research assistance, not legal advice. Always consult a qualified legal professional."
+""",
+
+        "user_template": """LEGAL RESEARCH QUERY: {query}
+
+ACTIVE FILTERS:
+- Document type: {document_type}
+- Jurisdiction: {jurisdiction}
+- Court levels: {court_levels}
+- Outcome filter: {outcome_filter}
+- Results found: {source_count}
+
+RETRIEVED SOURCES:
+{context}
+
+Provide a structured legal research response following the required format above.""",
+    },
+    "el": {
+        "system": """Είστε βοηθός νομικής έρευνας ειδικευμένος στο κυπριακό δίκαιο, τη νομολογία του ΕΔΔΑ και τη νομοθεσία της ΕΕ.
+
+ΠΡΕΠΕΙ να δομήσετε την απάντησή σας χρησιμοποιώντας τις ακόλουθες ενότητες. Χρησιμοποιήστε αυτές τις ΑΚΡΙΒΕΙΣ επικεφαλίδες:
+
+ΣΧΕΤΙΚΗ ΝΟΜΟΘΕΣΙΑ
+Καταγράψτε τους εφαρμοστέους νόμους με αριθμούς άρθρων. Αναφέρετε τη βάση δεδομένων (CyLaw, EUR-Lex).
+
+ΣΧΕΤΙΚΗ ΝΟΜΟΛΟΓΙΑ
+Ομαδοποιήστε τις αποφάσεις κατά επίπεδο δικαστηρίου:
+- Ανώτατο Δικαστήριο / Ανώτατο Συνταγματικό Δικαστήριο
+- Εφετείο / Διοικητικό Εφετείο
+- Διοικητικό Δικαστήριο / Πρωτοβάθμιο / Επαρχιακό Δικαστήριο
+- ΕΔΔΑ (Ευρωπαϊκό Δικαστήριο Ανθρωπίνων Δικαιωμάτων)
+- ΔΕΕ (Δικαστήριο της Ευρωπαϊκής Ένωσης)
+
+ΠΕΡΙΛΗΨΕΙΣ ΥΠΟΘΕΣΕΩΝ
+Για κάθε σημαντική υπόθεση:
+- Δικαστήριο και αριθμός υπόθεσης
+- Βασικά πραγματικά περιστατικά
+- Απόφαση
+- Αιτιολογία
+
+ΝΟΜΙΚΗ ΑΝΑΛΥΣΗ
+Σύνθεση ευρημάτων. Πώς αλληλεπιδρούν οι αποφάσεις και η νομοθεσία;
+
+ΠΛΕΟΝΕΚΤΗΜΑΤΑ ΚΑΙ ΑΔΥΝΑΜΙΕΣ
+Της νομικής θέσης. Ποια επιχειρήματα είναι ισχυρά; Ποιες πιθανές αντιρρήσεις;
+
+ΠΡΟΤΕΙΝΟΜΕΝΗ ΔΟΜΗ ΑΓΩΓΗΣ
+Εάν η ερώτηση υπονοεί ενδεχόμενη νομική ενέργεια, σκιαγραφήστε τη δομή.
+
+ΚΡΙΣΙΜΟΙ ΚΑΝΟΝΕΣ:
+1. ΜΟΝΟ παραπέμψτε σε πηγές που παρέχονται. Ποτέ μην κατασκευάζετε υποθέσεις.
+2. ΚΑΘΕ πραγματικός ισχυρισμός ΠΡΕΠΕΙ να έχει παραπομπή [N].
+3. ΜΗΝ χρησιμοποιείτε αστερίσκους (*) για μορφοποίηση.
+4. Τελειώστε με: "Αυτή είναι βοήθεια νομικής έρευνας, όχι νομική συμβουλή. Συμβουλευτείτε πάντα εξειδικευμένο νομικό."
+""",
+
+        "user_template": """ΕΡΩΤΗΜΑ ΝΟΜΙΚΗΣ ΕΡΕΥΝΑΣ: {query}
+
+ΕΝΕΡΓΑ ΦΙΛΤΡΑ:
+- Τύπος εγγράφου: {document_type}
+- Δικαιοδοσία: {jurisdiction}
+- Επίπεδα δικαστηρίου: {court_levels}
+- Φίλτρο αποτελέσματος: {outcome_filter}
+- Αποτελέσματα: {source_count}
+
+ΑΝΑΚΤΗΜΕΝΕΣ ΠΗΓΕΣ:
+{context}
+
+Παρέχετε δομημένη απάντηση νομικής έρευνας σύμφωνα με την απαιτούμενη μορφή.""",
+    },
+}
+
+# =============================================================================
+# Advisory Language Patterns (for post-generation compliance cleanup)
+# =============================================================================
+
+ADVISORY_PATTERNS = {
+    "en": {
+        # Patterns that give direct legal advice (replace with neutral phrasing)
+        "replacements": [
+            (r"(?i)you\s+should\s+(file|sue|claim|pursue|seek)\b", r"a party may consider the option to \1"),
+            (r"(?i)I\s+(recommend|advise|suggest)\s+(that\s+)?you", "the legal analysis suggests that one"),
+            (r"(?i)your\s+best\s+option\s+is", "a potentially viable option is"),
+            (r"(?i)you\s+are\s+(likely|probably)\s+to\s+win", "the legal position appears strong"),
+            (r"(?i)you\s+will\s+(likely\s+)?succeed", "there are grounds that may support success"),
+            (r"(?i)I\s+would\s+advise\s+(you\s+)?to", "it may be advisable to"),
+            (r"(?i)you\s+must\s+(file|sue|claim|act)", r"it may be necessary to \1"),
+            (r"(?i)you\s+need\s+to\s+(file|sue|claim|act)", r"it may be necessary to \1"),
+        ],
+        # Patterns that are unacceptable (flag for review if found)
+        "prohibited": [
+            r"(?i)I\s+guarantee",
+            r"(?i)you\s+will\s+definitely\s+win",
+            r"(?i)this\s+is\s+legal\s+advice",
+            r"(?i)as\s+your\s+lawyer",
+            r"(?i)my\s+legal\s+opinion\s+is",
+        ],
+    },
+    "el": {
+        "replacements": [
+            (r"(?i)πρέπει\s+να\s+(καταθέσετε|ασκήσετε)", r"ενδέχεται να είναι σκόπιμο να \1"),
+            (r"(?i)σας\s+συνιστώ", "η νομική ανάλυση υποδεικνύει"),
+            (r"(?i)η\s+καλύτερή?\s+σας\s+επιλογή", "μια πιθανή επιλογή"),
+            (r"(?i)θα\s+κερδίσετε", "υπάρχουν λόγοι που μπορεί να υποστηρίξουν την επιτυχία"),
+        ],
+        "prohibited": [
+            r"(?i)εγγυώμαι",
+            r"(?i)σίγουρα\s+θα\s+κερδίσετε",
+            r"(?i)αυτή\s+είναι\s+νομική\s+συμβουλή",
+        ],
     },
 }
 

@@ -1101,6 +1101,7 @@ class VectorStore:
         source_origins: Optional[list[str]] = None,
         family_ids: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
+        metadata_filters: Optional[dict] = None,
     ) -> list[SearchResult]:
         """
         Semantic search using vector similarity.
@@ -1161,7 +1162,45 @@ class VectorStore:
             filters.append(f"({' OR '.join(source_conditions)})")
             filter_params.extend(source_params)
 
+        # Metadata pre-filtering (legal research mode)
+        # Requires JOIN to legal_documents when active
+        needs_metadata_join = False
+        if metadata_filters:
+            if metadata_filters.get("document_type"):
+                filters.append("ld.document_type = %s")
+                filter_params.append(metadata_filters["document_type"])
+                needs_metadata_join = True
+
+            if metadata_filters.get("jurisdiction"):
+                filters.append("ld.jurisdiction ILIKE %s")
+                filter_params.append(f"%{metadata_filters['jurisdiction']}%")
+                needs_metadata_join = True
+
+            if metadata_filters.get("court_levels"):
+                court_levels = metadata_filters["court_levels"]
+                placeholders = ",".join(["%s"] * len(court_levels))
+                filters.append(f"ld.metadata->>'court_level' IN ({placeholders})")
+                filter_params.extend(court_levels)
+                needs_metadata_join = True
+
+            if metadata_filters.get("year_range"):
+                yr_start, yr_end = metadata_filters["year_range"]
+                filters.append("EXTRACT(YEAR FROM ld.created_at) BETWEEN %s AND %s")
+                filter_params.extend([yr_start, yr_end])
+                needs_metadata_join = True
+
+            if metadata_filters.get("outcome"):
+                for key, value in metadata_filters["outcome"].items():
+                    filters.append(f"(ld.metadata->>%s)::boolean = %s")
+                    filter_params.extend([key, value])
+                    needs_metadata_join = True
+
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        # Conditionally JOIN legal_documents for metadata filtering
+        join_clause = ""
+        if needs_metadata_join:
+            join_clause = "JOIN legal_documents ld ON c.document_id = ld.id"
 
         columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
@@ -1185,6 +1224,7 @@ class VectorStore:
             c.context_after,
             1 - (c.embedding <=> %s::vector) as score
         FROM {self.config.table_name} c
+        {join_clause}
         {where_clause}
         ORDER BY c.embedding <=> %s::vector
         LIMIT %s
@@ -1240,6 +1280,7 @@ class VectorStore:
         source_origins: Optional[list[str]] = None,
         family_ids: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
+        metadata_filters: Optional[dict] = None,
     ) -> list[SearchResult]:
         """
         Full-text keyword search using PostgreSQL ts_rank.
@@ -1303,6 +1344,46 @@ class VectorStore:
             where_extra += f" AND ({' OR '.join(source_conditions)})"
             filter_params.extend(source_params)
 
+        # Metadata pre-filtering (legal research mode)
+        needs_metadata_join = False
+        if metadata_filters:
+            if metadata_filters.get("document_type"):
+                where_extra += " AND ld.document_type = %s"
+                filter_params.append(metadata_filters["document_type"])
+                needs_metadata_join = True
+
+            if metadata_filters.get("jurisdiction"):
+                where_extra += " AND ld.jurisdiction ILIKE %s"
+                filter_params.append(f"%{metadata_filters['jurisdiction']}%")
+                needs_metadata_join = True
+
+            if metadata_filters.get("court_levels"):
+                court_levels = metadata_filters["court_levels"]
+                placeholders = ",".join(["%s"] * len(court_levels))
+                where_extra += f" AND ld.metadata->>'court_level' IN ({placeholders})"
+                filter_params.extend(court_levels)
+                needs_metadata_join = True
+
+            if metadata_filters.get("year_range"):
+                yr_start, yr_end = metadata_filters["year_range"]
+                where_extra += " AND EXTRACT(YEAR FROM ld.created_at) BETWEEN %s AND %s"
+                filter_params.extend([yr_start, yr_end])
+                needs_metadata_join = True
+
+            if metadata_filters.get("outcome"):
+                for key, value in metadata_filters["outcome"].items():
+                    where_extra += " AND (ld.metadata->>%s)::boolean = %s"
+                    filter_params.extend([key, value])
+                    needs_metadata_join = True
+
+        # Conditionally add alias and JOIN for metadata filtering
+        if needs_metadata_join:
+            table_ref = f"{self.config.table_name} c JOIN legal_documents ld ON c.document_id = ld.id"
+            col_prefix = "c."
+        else:
+            table_ref = self.config.table_name
+            col_prefix = ""
+
         kw_columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
             "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
@@ -1310,19 +1391,19 @@ class VectorStore:
         ]
         sql = f"""
         SELECT
-            id as chunk_id,
-            document_id,
-            content,
-            section_title,
-            hierarchy_path,
-            page_numbers,
-            paragraph_start,
-            paragraph_end,
-            original_paragraph_numbers,
-            level,
-            ts_rank(to_tsvector(%s, content), websearch_to_tsquery(%s, %s)) as score
-        FROM {self.config.table_name}
-        WHERE to_tsvector(%s, content) @@ websearch_to_tsquery(%s, %s)
+            {col_prefix}id as chunk_id,
+            {col_prefix}document_id,
+            {col_prefix}content,
+            {col_prefix}section_title,
+            {col_prefix}hierarchy_path,
+            {col_prefix}page_numbers,
+            {col_prefix}paragraph_start,
+            {col_prefix}paragraph_end,
+            {col_prefix}original_paragraph_numbers,
+            {col_prefix}level,
+            ts_rank(to_tsvector(%s, {col_prefix}content), websearch_to_tsquery(%s, %s)) as score
+        FROM {table_ref}
+        WHERE to_tsvector(%s, {col_prefix}content) @@ websearch_to_tsquery(%s, %s)
         {where_extra}
         ORDER BY score DESC
         LIMIT %s
@@ -1357,6 +1438,53 @@ class VectorStore:
             return results
 
         return self._execute_with_retry(_op, "keyword_search")
+
+    def get_document_metadata(self, document_ids: list[str]) -> dict[str, dict]:
+        """
+        Fetch metadata for multiple documents by ID.
+
+        Used by case-level aggregation to enrich results with
+        document-level fields (title, type, jurisdiction, outcome).
+
+        Args:
+            document_ids: List of document UUIDs
+
+        Returns:
+            dict mapping document_id -> metadata dict
+        """
+        if not document_ids:
+            return {}
+
+        placeholders = ",".join(["%s::uuid"] * len(document_ids))
+        sql = f"""
+        SELECT id, title, document_type, jurisdiction, metadata, created_at
+        FROM legal_documents
+        WHERE id IN ({placeholders})
+        """
+
+        def _op(conn):
+            with conn.cursor() as cur:
+                cur.execute(sql, document_ids)
+                rows = cur.fetchall()
+
+            columns = ["id", "title", "document_type", "jurisdiction", "metadata", "created_at"]
+            result = {}
+            for row in rows:
+                if hasattr(row, 'keys'):
+                    row_dict = dict(row)
+                else:
+                    row_dict = dict(zip(columns, row))
+                doc_id = str(row_dict["id"])
+                result[doc_id] = {
+                    "title": row_dict["title"],
+                    "document_type": row_dict["document_type"],
+                    "jurisdiction": row_dict["jurisdiction"],
+                    "metadata": row_dict["metadata"] or {},
+                    "created_at": str(row_dict["created_at"]) if row_dict["created_at"] else None,
+                }
+            return result
+
+        return self._execute_with_retry(_op, "get_document_metadata")
 
     def search_by_paragraph(
         self,
@@ -2293,6 +2421,52 @@ class VectorStore:
         except Exception as e:
             self._safe_rollback(conn)
             logger.error(f"Document families migration failed: {e}")
+            return False
+        finally:
+            self._release_connection(conn)
+
+    def migrate_add_outcome_indexes(self) -> bool:
+        """
+        Migration: Add JSONB indexes for case outcome metadata filtering.
+
+        Enables efficient filtering by court_level, violation_found, annulment_granted,
+        and case_number in the legal_documents.metadata JSONB column.
+        Safe to run multiple times (uses IF NOT EXISTS).
+
+        Returns:
+            True if migration succeeded, False otherwise
+        """
+        conn = self._ensure_connection()
+
+        migration_sql = """
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_court_level
+            ON legal_documents ((metadata->>'court_level'));
+
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_violation
+            ON legal_documents ((metadata->>'violation_found'));
+
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_annulment
+            ON legal_documents ((metadata->>'annulment_granted'));
+
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_case_number
+            ON legal_documents ((metadata->>'case_number'));
+
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_metadata_gin
+            ON legal_documents USING GIN (metadata jsonb_path_ops);
+
+        CREATE INDEX IF NOT EXISTS idx_legal_documents_type_jurisdiction
+            ON legal_documents (document_type, jurisdiction);
+        """
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(migration_sql)
+                conn.commit()
+            logger.info("Migration completed: Outcome metadata indexes created")
+            return True
+        except Exception as e:
+            self._safe_rollback(conn)
+            logger.error(f"Outcome indexes migration failed: {e}")
             return False
         finally:
             self._release_connection(conn)

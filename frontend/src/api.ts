@@ -4,6 +4,7 @@ import type {
   DocumentInfo,
   UploadResponse,
   SourceToggles,
+  MetadataFilters,
   AuthResponse,
   UserInfo,
   Conversation,
@@ -119,6 +120,8 @@ export const api = {
     topK?: number,
     sourceToggles?: SourceToggles,
     conversationId?: string,
+    researchMode?: boolean,
+    metadataFilters?: MetadataFilters,
   ): { abort: () => void } => {
     const controller = new AbortController()
     const baseURL = import.meta.env.VITE_API_URL || ''
@@ -135,6 +138,10 @@ export const api = {
         top_k: topK || 10,
         conversation_id: conversationId || null,
         ...(sourceToggles ? { sources: sourceToggles } : {}),
+        ...(researchMode ? { research_mode: true } : {}),
+        ...(metadataFilters && Object.keys(metadataFilters).length > 0
+          ? { metadata_filters: metadataFilters }
+          : {}),
       }),
       signal: controller.signal,
     })

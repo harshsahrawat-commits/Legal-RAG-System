@@ -709,6 +709,20 @@ function ChatMessage({ message, isStreaming = false }: Props) {
             />
           </div>
         )}
+
+        {/* Legal disclaimer for assistant messages */}
+        {!isUser && !showThinkingUI && message.content && !message.isError && (
+          <div style={{
+            fontSize: 11,
+            color: 'var(--text-3)',
+            marginTop: 6,
+            paddingLeft: 4,
+            fontStyle: 'italic',
+            lineHeight: 1.4,
+          }}>
+            This is legal research assistance, not legal advice. Always consult a qualified legal professional.
+          </div>
+        )}
       </div>
       {isUser && (
         <div style={{ ...styles.avatar, background: 'var(--accent-dim)', color: 'var(--accent)' }}>

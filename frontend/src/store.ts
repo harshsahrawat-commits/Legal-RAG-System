@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SourceToggles, ChatMessage, UserInfo, Conversation, DocumentFamily } from './types'
+import type { SourceToggles, ChatMessage, UserInfo, Conversation, DocumentFamily, MetadataFilters } from './types'
 
 interface AppState {
   // Auth (Google OAuth + JWT)
@@ -27,6 +27,13 @@ interface AppState {
   // Document families
   families: DocumentFamily[]
   setFamilies: (families: DocumentFamily[]) => void
+
+  // Research mode
+  researchMode: boolean
+  researchFilters: MetadataFilters
+  setResearchMode: (enabled: boolean) => void
+  setResearchFilter: <K extends keyof MetadataFilters>(key: K, value: MetadataFilters[K]) => void
+  resetResearchFilters: () => void
 
   // Settings page visibility
   settingsOpen: boolean
@@ -96,6 +103,14 @@ export const useStore = create<AppState>((set, get) => ({
 
   families: [],
   setFamilies: (families) => set({ families }),
+
+  researchMode: false,
+  researchFilters: {},
+  setResearchMode: (enabled) => set({ researchMode: enabled }),
+  setResearchFilter: (key, value) => set((state) => ({
+    researchFilters: { ...state.researchFilters, [key]: value },
+  })),
+  resetResearchFilters: () => set({ researchFilters: {} }),
 
   settingsOpen: false,
   setSettingsOpen: (open) => set({ settingsOpen: open }),

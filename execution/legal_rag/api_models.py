@@ -14,6 +14,15 @@ class SourceToggles(BaseModel):
     families: list[str] = []  # family UUIDs to include
 
 
+class MetadataFilters(BaseModel):
+    """Structured metadata filters for legal research queries."""
+    document_type: Optional[str] = None        # "case_law", "statute", "regulation", "contract"
+    jurisdiction: Optional[str] = None          # "Cyprus", "EU", "ECHR"
+    court_levels: Optional[list[str]] = None    # ["Supreme", "Appeal", "Administrative", "First Instance"]
+    year_range: Optional[tuple[int, int]] = None  # (2000, 2024)
+    outcome: Optional[dict[str, bool]] = None   # {"violation_found": True, "annulment_granted": False}
+
+
 class QueryRequest(BaseModel):
     """Request body for RAG query endpoint."""
     query: str = Field(..., min_length=1, max_length=2000)
@@ -157,8 +166,10 @@ class StreamQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     conversation_id: Optional[str] = None
     document_id: Optional[str] = None
-    top_k: int = Field(default=10, ge=1, le=50)
+    top_k: int = Field(default=10, ge=1, le=100)
     sources: SourceToggles = SourceToggles()
+    research_mode: bool = False
+    metadata_filters: Optional[MetadataFilters] = None
 
 
 # =========================================================================
