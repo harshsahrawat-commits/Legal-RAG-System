@@ -1172,8 +1172,17 @@ class VectorStore:
                 needs_metadata_join = True
 
             if metadata_filters.get("jurisdiction"):
-                filters.append("ld.jurisdiction ILIKE %s")
-                filter_params.append(f"%{metadata_filters['jurisdiction']}%")
+                # Jurisdiction column may be NULL; fall back to source_origin
+                # (cylaw = Cyprus, hudoc = ECHR, eurlex = EU)
+                _JURISDICTION_SOURCE = {"Cyprus": "cylaw", "ECHR": "hudoc", "EU": "eurlex"}
+                jur = metadata_filters["jurisdiction"]
+                source_proxy = _JURISDICTION_SOURCE.get(jur)
+                if source_proxy:
+                    filters.append("(ld.jurisdiction ILIKE %s OR c.source_origin = %s)")
+                    filter_params.extend([f"%{jur}%", source_proxy])
+                else:
+                    filters.append("ld.jurisdiction ILIKE %s")
+                    filter_params.append(f"%{jur}%")
                 needs_metadata_join = True
 
             if metadata_filters.get("court_levels"):
@@ -1353,8 +1362,16 @@ class VectorStore:
                 needs_metadata_join = True
 
             if metadata_filters.get("jurisdiction"):
-                where_extra += " AND ld.jurisdiction ILIKE %s"
-                filter_params.append(f"%{metadata_filters['jurisdiction']}%")
+                # Jurisdiction column may be NULL; fall back to source_origin
+                _JURISDICTION_SOURCE = {"Cyprus": "cylaw", "ECHR": "hudoc", "EU": "eurlex"}
+                jur = metadata_filters["jurisdiction"]
+                source_proxy = _JURISDICTION_SOURCE.get(jur)
+                if source_proxy:
+                    where_extra += " AND (ld.jurisdiction ILIKE %s OR c.source_origin = %s)"
+                    filter_params.extend([f"%{jur}%", source_proxy])
+                else:
+                    where_extra += " AND ld.jurisdiction ILIKE %s"
+                    filter_params.append(f"%{jur}%")
                 needs_metadata_join = True
 
             if metadata_filters.get("court_levels"):

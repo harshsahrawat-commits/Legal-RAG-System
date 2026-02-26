@@ -485,9 +485,9 @@ class HybridRetriever:
                 effective,
                 use_document_diversity=False,    # Don't suppress same-doc clusters
                 use_smart_reranking=False,        # Always rerank, never smart-skip
-                vector_top_k=80,                  # Much higher for comprehensive results
-                keyword_top_k=60,
-                final_top_k=60,                   # Return more results for case aggregation
+                vector_top_k=40,                  # Balanced: enough for aggregation, not too slow
+                keyword_top_k=30,
+                final_top_k=30,                   # Case aggregation groups to max 10 cases anyway
             )
 
         logger.info(f"Using '{query_type}' config: {query_config['description']}")
