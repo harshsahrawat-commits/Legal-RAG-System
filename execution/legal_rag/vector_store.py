@@ -1269,6 +1269,7 @@ class VectorStore:
                             "legal_references": row_dict["legal_references"],
                             "context_before": row_dict["context_before"],
                             "context_after": row_dict["context_after"],
+                            "original_score": float(row_dict["score"]),
                         },
                         paragraph_start=row_dict.get("paragraph_start"),
                         paragraph_end=row_dict.get("paragraph_end"),

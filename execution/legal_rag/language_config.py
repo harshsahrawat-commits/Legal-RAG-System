@@ -34,7 +34,7 @@ class TenantLanguageConfig:
     language: str = "en"
     embedding_model: str = "voyage-law-2"
     embedding_provider: str = "voyage"
-    llm_model: str = "qwen/qwen3-235b-a22b"
+    llm_model: str = "meta/llama-3.3-70b-instruct"
     reranker_model: str = "rerank-multilingual-v3.0"
     fts_language: str = "english"
     chars_per_token: int = 4
@@ -55,7 +55,7 @@ class TenantLanguageConfig:
                 language="el",
                 embedding_model="voyage-multilingual-2",
                 embedding_provider="voyage",
-                llm_model="qwen/qwen3-235b-a22b",
+                llm_model="meta/llama-3.3-70b-instruct",
                 reranker_model="rerank-multilingual-v3.0",
                 fts_language="greek",
                 chars_per_token=3,

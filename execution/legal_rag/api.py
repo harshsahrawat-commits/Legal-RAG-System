@@ -263,7 +263,7 @@ class ServiceContainer:
             self._llm_client = OpenAI(
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key=os.getenv("NVIDIA_API_KEY"),
-                timeout=120.0,
+                timeout=60.0,
             )
         return self._llm_client
 
@@ -818,7 +818,7 @@ def query_documents(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."},
             ],
-            max_tokens=3500,
+            max_tokens=2000,
             temperature=0.2,
         )
         answer = _clean_answer(response.choices[0].message.content or "")
@@ -1075,7 +1075,7 @@ def query_documents_stream(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    max_tokens=3500,
+                    max_tokens=2000,
                     temperature=0.2,
                     stream=True,
                 )
