@@ -359,7 +359,7 @@ _ORIGIN_LABELS = {
 def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                       query_embedding, services, store, source_origins,
                       family_ids=None, conversation_id=None, query_lang=None,
-                      metadata_filters=None):
+                      metadata_filters=None, research_mode=False):
     """Unified DB retrieval for all sources (CyLaw, HUDOC, EUR-Lex, families, session docs).
 
     All sources are stored in the same pgvector DB with a `source_origin` column.
@@ -380,6 +380,7 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
             conversation_id=conversation_id,
             query_lang=query_lang,
             metadata_filters=metadata_filters,
+            research_mode=research_mode,
         )
         results = [r for r in results if r.hierarchy_path != "Document"]
         if not results:
@@ -1011,7 +1012,7 @@ def query_documents_stream(
                 request.query, retriever, client_id, request.document_id,
                 request.top_k, original_embedding, services, store, source_origins,
                 family_ids=family_ids, conversation_id=conversation_id, query_lang=query_lang,
-                metadata_filters=mf_dict,
+                metadata_filters=mf_dict, research_mode=bool(request.research_mode),
             )
 
             if not all_sources:

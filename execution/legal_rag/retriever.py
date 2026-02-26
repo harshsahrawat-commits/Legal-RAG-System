@@ -781,6 +781,7 @@ class HybridRetriever:
         metadata_filters: Optional[dict] = None,
         conversation_id: Optional[str] = None,
         query_lang: Optional[str] = None,
+        research_mode: bool = False,
     ) -> list[SearchResult]:
         """
         Retrieve relevant chunks for a query.
@@ -850,6 +851,12 @@ class HybridRetriever:
         # ADVANCED OPTIMIZATION 2: Query classification
         # ============================================================
         query_type = self._classify_query(query, effective_lang)
+
+        # Force legal_research when the user explicitly toggled Research Mode ON
+        if research_mode and query_type != "legal_research":
+            logger.info(f"Overriding query type '{query_type}' -> 'legal_research' (research_mode=True)")
+            query_type = "legal_research"
+
         effective_config = self._get_effective_config(query_type)
 
         # Extract metadata filters for legal research queries
@@ -1015,6 +1022,7 @@ class HybridRetriever:
                     source_origins=cross_sources,
                     family_ids=None,
                     conversation_id=None,
+                    metadata_filters=metadata_filters,
                 )
                 search_tasks.append(("vector", lambda e=cross_embedding: self.store.search(
                     query_embedding=e, top_k=variant_top_k, **cross_common,

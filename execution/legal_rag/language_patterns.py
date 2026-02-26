@@ -270,6 +270,12 @@ LEGAL_RESEARCH_SIGNALS = {
         r"only\s+(cases|decisions)\s+where",
         r"all\s+decisions\s+of\s+the",
         r"annulling\s+administrative\s+acts",
+        # Broader patterns for common legal research phrasing
+        r"(what|which)\s+case\s+law\s+(exists|is\s+there|regarding|on|about|concerning)",
+        r"(what|which)\s+(cases|rulings|decisions|judgments)\s+(exist|are\s+there|address|deal\s+with|concern)",
+        r"(key|leading|landmark|important|major|recent)\s+(rulings|decisions|cases|judgments)",
+        r"case\s+law\s+(on|regarding|concerning|about|relating\s+to|addressing)",
+        r"(recent|latest)\s+(supreme|appeal|administrative|district)\s+court\s+(decisions|rulings|judgments|cases)",
     ],
     "el": [
         r"βρες\s+όλες\s+τις\s+αποφάσεις",
