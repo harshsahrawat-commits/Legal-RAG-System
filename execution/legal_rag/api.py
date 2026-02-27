@@ -391,8 +391,10 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
         doc_source_meta = store.get_document_source_meta(doc_ids)
         doc_titles = {did: m["title"] for did, m in doc_source_meta.items()}
 
-        # Build citations
-        cited_contents = services["citation_extractor"].extract(results, document_titles=doc_titles)
+        # Build citations (pass full doc metadata for professional legal formatting)
+        cited_contents = services["citation_extractor"].extract(
+            results, document_titles=doc_titles, doc_metadata_map=doc_source_meta,
+        )
 
         # Build SourceInfo per result, determining origin from document metadata
         sources_list = []
@@ -452,16 +454,44 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
         return [], []
 
 
-def _build_context_string(cited_contents, sources_list):
+def _build_context_string(cited_contents, sources_list, query_type=None):
     """Build LLM context string with origin labels from cited contents + sources.
 
     Returns the context string for the LLM prompt.
     Uses plain text formatting (no markdown) to avoid the LLM mirroring markdown in its output.
     For case-aggregated results, uses merged content from multiple passages.
+
+    For legal_research queries, inserts section headers between court hierarchy
+    tiers so the LLM can structure its analysis by authority level.
     """
     context_parts = []
+    current_section = None  # Track section for legal_research headers
+
     for idx, (cc, src) in enumerate(zip(cited_contents, sources_list), 1):
         label = _ORIGIN_LABELS.get(src.source_origin, src.source_origin)
+
+        # Insert court hierarchy section headers for legal research queries
+        if query_type == "legal_research":
+            source_meta = cc.citation.source_metadata if hasattr(cc.citation, 'source_metadata') else {}
+            source_origin = (source_meta.get("source_origin") or src.source_origin or "").lower()
+            doc_type = (source_meta.get("document_type") or "").lower()
+
+            if doc_type in ("statute", "legislation", "regulation", "constitutional") or source_origin == "eurlex":
+                section = "APPLICABLE LEGISLATION"
+            elif source_origin == "hudoc":
+                section = "EUROPEAN COURT OF HUMAN RIGHTS DECISIONS"
+            else:
+                court = source_meta.get("court_level") or ""
+                if court:
+                    section = f"{court.upper()} DECISIONS"
+                elif doc_type == "case_law":
+                    section = "CASE LAW"
+                else:
+                    section = "OTHER SOURCES"
+
+            if section != current_section:
+                context_parts.append(f"\n--- {section} ---\n")
+                current_section = section
 
         # Use merged case content if available (case-level aggregation)
         meta = getattr(cc, 'metadata', None) or {}
@@ -806,8 +836,11 @@ def query_documents(
             latency_ms=(time.time() - start_time) * 1000,
         )
 
+    # Classify query for context formatting (section headers in legal research)
+    query_type = retriever._classify_query(request.query, query_lang)
+
     # Build LLM context
-    context = _build_context_string(cited_contents, all_sources)
+    context = _build_context_string(cited_contents, all_sources, query_type=query_type)
     try:
         llm_client = _container.get_llm_client()
         system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
@@ -1045,7 +1078,7 @@ def query_documents_stream(
                 )
 
             # Build LLM context
-            context = _build_context_string(cited_contents, all_sources)
+            context = _build_context_string(cited_contents, all_sources, query_type=query_type)
             full_answer = ""
             try:
                 llm_client = _container.get_llm_client()

@@ -56,13 +56,17 @@ QUERY_CONFIGS = {
         "use_query_expansion": False,
         "use_hyde": False,
         "use_multi_query": False,
-        "description": "Short queries - skip all enhancement for speed"
+        "skip_reranking": True,
+        "skip_keyword_search": True,
+        "vector_top_k": 10,
+        "final_top_k": 5,
+        "description": "Short queries - vector-only, no reranking (TARG gating)"
     },
     "factual": {
-        "use_query_expansion": True,
+        "use_query_expansion": False,
         "use_hyde": False,
         "use_multi_query": False,
-        "description": "Factual queries - use expansion only"
+        "description": "Factual queries - no expansion (TARG gating)"
     },
     "analytical": {
         "use_query_expansion": True,
@@ -274,6 +278,10 @@ class RetrievalConfig:
     smart_rerank_threshold: float = 0.85  # Skip if top score > this
     smart_rerank_gap: float = 0.15  # Skip if gap to 2nd result > this
 
+    # TARG-inspired gating: skip expensive pipeline stages for simple queries
+    skip_reranking: bool = False  # Skip Cohere reranking entirely
+    skip_keyword_search: bool = False  # Vector-only retrieval (no BM25)
+
     # Query enhancement options (industry-standard improvements)
     use_query_expansion: bool = True  # Expand queries with legal terminology
     use_hyde: bool = True  # Hypothetical Document Embeddings
@@ -472,12 +480,22 @@ class HybridRetriever:
 
         # Create a copy of the base config with query-specific overrides
         from dataclasses import replace
-        effective = replace(
-            self.config,
+        overrides = dict(
             use_query_expansion=query_config["use_query_expansion"],
             use_hyde=query_config["use_hyde"],
             use_multi_query=query_config["use_multi_query"],
         )
+        # TARG gating flags (default False preserves existing behavior)
+        if query_config.get("skip_reranking"):
+            overrides["skip_reranking"] = True
+        if query_config.get("skip_keyword_search"):
+            overrides["skip_keyword_search"] = True
+        # Per-type top_k overrides
+        if "vector_top_k" in query_config:
+            overrides["vector_top_k"] = query_config["vector_top_k"]
+        if "final_top_k" in query_config:
+            overrides["final_top_k"] = query_config["final_top_k"]
+        effective = replace(self.config, **overrides)
 
         # Legal research mode: override diversity and reranking behavior
         if query_type == "legal_research":
@@ -560,6 +578,26 @@ class HybridRetriever:
         if any(w in query_lower for w in ["appeal dismissed", "application rejected",
                                            "απορρίφθηκε"]):
             outcome["annulment_granted"] = False
+        if any(w in query_lower for w in ["abuse of discretion", "breach of proportionality",
+                                           "disproportionate measure", "disproportionate restriction",
+                                           "exceeded limits of discretion",
+                                           "κατάχρηση εξουσίας", "κατάχρηση διακριτικής",
+                                           "παραβίαση αρχής αναλογικότητα",
+                                           "υπέρβαση ορίων διακριτικής"]):
+            outcome["abuse_of_discretion"] = True
+        if any(w in query_lower for w in ["unfair dismissal", "wrongful termination",
+                                           "redundancy", "reinstatement ordered",
+                                           "compensation awarded", "dismissal unlawful",
+                                           "παράνομη απόλυση", "αδικαιολόγητη απόλυση",
+                                           "επαναπρόσληψη"]):
+            outcome["unfair_dismissal"] = True
+        if any(w in query_lower for w in ["state as respondent", "against the republic",
+                                           "against the state", "against the government",
+                                           "state liability", "government was found",
+                                           "κατά της δημοκρατίας", "κατά του κράτους",
+                                           "κρατική ευθύνη",
+                                           "δημοκρατία ως καθ"]):
+            outcome["state_respondent"] = True
         if outcome:
             filters["outcome"] = outcome
 
@@ -992,9 +1030,11 @@ class HybridRetriever:
                 search_tasks.append(("vector", lambda e=emb, t=tk, gc=group_common: self.store.search(
                     query_embedding=e, top_k=t, **gc,
                 )))
-                search_tasks.append(("keyword", lambda q=sq, t=tk, f=group_fts, gc=group_common: self.store.keyword_search(
-                    query=q, top_k=t, fts_language=f, **gc,
-                )))
+                # TARG gating: skip BM25/keyword search for simple queries
+                if not effective_config.skip_keyword_search:
+                    search_tasks.append(("keyword", lambda q=sq, t=tk, f=group_fts, gc=group_common: self.store.keyword_search(
+                        query=q, top_k=t, fts_language=f, **gc,
+                    )))
 
             # HyDE vector searches for this group
             for _name, hyde_emb in group_hyde:
@@ -1027,9 +1067,11 @@ class HybridRetriever:
                 search_tasks.append(("vector", lambda e=cross_embedding: self.store.search(
                     query_embedding=e, top_k=variant_top_k, **cross_common,
                 )))
-                search_tasks.append(("keyword", lambda q=translated_query, f=cross_fts: self.store.keyword_search(
-                    query=q, top_k=variant_top_k, fts_language=f, **cross_common,
-                )))
+                # TARG gating: skip BM25/keyword search for simple queries
+                if not effective_config.skip_keyword_search:
+                    search_tasks.append(("keyword", lambda q=translated_query, f=cross_fts: self.store.keyword_search(
+                        query=q, top_k=variant_top_k, fts_language=f, **cross_common,
+                    )))
 
         # 1d. Execute all search tasks in parallel
         # Cap workers at 6 to stay within Neon Postgres connection limits
@@ -1057,7 +1099,11 @@ class HybridRetriever:
         logger.debug(f"RRF produced {len(fused_results)} combined results")
 
         # Stage 3: Rerank if enabled (with smart skip for cost savings)
-        if effective_config.use_reranking and self._reranker and fused_results:
+        # TARG gating: skip_reranking bypasses Cohere reranking entirely for simple queries
+        if effective_config.skip_reranking:
+            logger.info("TARG gating: skipping reranking for simple query")
+            final_results = fused_results[:top_k * 2]
+        elif effective_config.use_reranking and self._reranker and fused_results:
             # Check if we can skip reranking (smart reranking for cost savings)
             if self._should_skip_reranking(fused_results):
                 final_results = fused_results[:top_k * 2]
@@ -1091,6 +1137,12 @@ class HybridRetriever:
                 max_cases=min(top_k, 10),
                 chunks_per_case=3,
             )
+
+        # Stage 6: Legislation-first ordering for legal research queries
+        # Puts statutes/regulations before case law in results
+        if query_type == "legal_research":
+            final_results = self._order_legislation_first(final_results)
+            final_results = self._order_by_court_hierarchy(final_results)
 
         # ============================================================
         # Cache results for future similar queries
@@ -1324,6 +1376,170 @@ class HybridRetriever:
         )
 
         return final
+
+    def _order_legislation_first(self, results: list[SearchResult]) -> list[SearchResult]:
+        """
+        Reorder results so legislation appears before case law.
+
+        For legal research queries, statutes, regulations, and constitutional
+        provisions should be presented before case law. This is a post-processing
+        sort that preserves the relative ordering within each category.
+
+        Classification logic (source_origin is the primary signal):
+        - eurlex source -> legislation (EU directives/regulations)
+        - hudoc source -> case law (ECHR judgments)
+        - cylaw source -> uses document_type from legal_documents table:
+          - statute/legislation/regulation/constitutional -> legislation
+          - case_law -> case law
+          - missing/other -> other
+        - Unknown source -> other
+
+        Within each group, the original relevance-based ordering is preserved.
+
+        Args:
+            results: Ordered list of SearchResult from retrieval pipeline
+
+        Returns:
+            Reordered list with legislation first, then case law, then other
+        """
+        if not results:
+            return results
+
+        # Fetch document_type from legal_documents for cylaw docs that need it
+        # source_origin alone is sufficient for eurlex (legislation) and hudoc (case law),
+        # but cylaw contains both statutes and case law
+        doc_ids = list(set(r.document_id for r in results))
+        doc_metadata = {}
+        try:
+            doc_metadata = self.store.get_document_metadata(doc_ids)
+        except Exception as e:
+            logger.warning(f"Failed to fetch document metadata for legislation ordering: {e}")
+
+        legislation = []
+        case_law = []
+        other = []
+
+        for r in results:
+            meta = r.metadata if r.metadata else {}
+            source = (meta.get("source_origin") or "").lower()
+
+            # Get document_type from legal_documents table (more reliable than chunk metadata)
+            doc_meta = doc_metadata.get(r.document_id, {})
+            doc_type = (doc_meta.get("document_type") or "").lower()
+
+            # Classify based on source_origin + document_type
+            if source == "eurlex":
+                legislation.append(r)
+            elif source == "hudoc":
+                case_law.append(r)
+            elif doc_type in ("statute", "legislation", "regulation", "constitutional"):
+                legislation.append(r)
+            elif doc_type == "case_law":
+                case_law.append(r)
+            elif source == "cylaw" and not doc_type:
+                # cylaw with no document_type -- ambiguous, treat as other
+                other.append(r)
+            else:
+                other.append(r)
+
+        logger.info(
+            f"Legislation-first ordering: {len(legislation)} legislation, "
+            f"{len(case_law)} case law, {len(other)} other"
+        )
+        return legislation + case_law + other
+
+    # Court hierarchy ranks: lower number = higher authority.
+    # Cyprus courts are binding (1-6), international courts are persuasive (7-8).
+    COURT_HIERARCHY = {
+        # Cyprus courts (binding authority)
+        "Supreme": 1,
+        "Supreme Court": 1,
+        "Constitutional": 2,
+        "Supreme Constitutional": 2,
+        "Supreme Constitutional Court": 2,
+        "Appeal": 3,
+        "Court of Appeal": 3,
+        "Administrative Appeal": 4,
+        "Administrative Court of Appeal": 4,
+        "Administrative": 5,
+        "Administrative Court": 5,
+        "First Instance": 6,
+        "District": 6,
+        "Labour": 6,
+        "Family": 6,
+        # International courts (persuasive authority)
+        "ECHR": 7,
+        "European Court of Human Rights": 7,
+        "CJEU": 8,
+        "Court of Justice": 8,
+    }
+
+    def _order_by_court_hierarchy(self, results: list[SearchResult]) -> list[SearchResult]:
+        """Sort case law results by court hierarchy, preserving relevance within each tier.
+
+        Legislation and other results pass through unchanged in their existing
+        order. Only the case law portion is re-sorted so that higher-authority
+        courts appear first (Supreme > Appeal > District > ECHR > CJEU).
+
+        Within the same court tier, results are ordered by descending relevance
+        score so the most pertinent judgment in each tier leads.
+
+        Args:
+            results: Ordered list (typically already legislation-first)
+
+        Returns:
+            Reordered list with case law sorted by court hierarchy
+        """
+        if not results:
+            return results
+
+        # Fetch document metadata so we can access court_level and document_type
+        doc_ids = list(set(r.document_id for r in results))
+        doc_metadata = {}
+        try:
+            doc_metadata = self.store.get_document_metadata(doc_ids)
+        except Exception as e:
+            logger.warning(f"Failed to fetch document metadata for court hierarchy ordering: {e}")
+
+        legislation = []
+        case_law = []
+        other = []
+
+        for r in results:
+            meta = r.metadata if r.metadata else {}
+            source = (meta.get("source_origin") or "").lower()
+
+            doc_meta = doc_metadata.get(r.document_id, {})
+            doc_type = (doc_meta.get("document_type") or "").lower()
+
+            if source == "eurlex" or doc_type in ("statute", "legislation", "regulation", "constitutional"):
+                legislation.append(r)
+            elif source == "hudoc" or doc_type == "case_law":
+                case_law.append(r)
+            else:
+                other.append(r)
+
+        # Sort case law by court hierarchy, then by score within each tier
+        hierarchy = self.COURT_HIERARCHY
+
+        def court_sort_key(r):
+            doc_meta = doc_metadata.get(r.document_id, {})
+            court = doc_meta.get("court_level") or "Unknown"
+            # Try exact match first, then partial match for variations
+            rank = hierarchy.get(court, 99)
+            if rank == 99:
+                court_lower = court.lower() if court else ""
+                for key, value in hierarchy.items():
+                    if key.lower() in court_lower or court_lower in key.lower():
+                        rank = value
+                        break
+            score = r.score if hasattr(r, 'score') else 0
+            return (rank, -score)
+
+        case_law.sort(key=court_sort_key)
+
+        logger.info(f"Court hierarchy ordering: {len(case_law)} cases sorted")
+        return legislation + case_law + other
 
     def _rerank(
         self,

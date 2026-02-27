@@ -26,6 +26,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Per-query-type HNSW ef_search values.
+# Higher values increase recall at the cost of latency.
+# Default (25) matches the previous hardcoded value for backward compatibility.
+QUERY_EF_SEARCH = {
+    "simple": 20,
+    "factual": 25,
+    "standard": 30,
+    "analytical": 40,
+    "legal_research": 50,
+}
+_DEFAULT_EF_SEARCH = 25
+
 
 @dataclass
 class VectorStoreConfig:
@@ -1102,6 +1114,7 @@ class VectorStore:
         family_ids: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
         metadata_filters: Optional[dict] = None,
+        query_type: str = "standard",
     ) -> list[SearchResult]:
         """
         Semantic search using vector similarity.
@@ -1115,6 +1128,9 @@ class VectorStore:
             source_origins: Optional list of source origins to filter by (e.g. ["cylaw", "hudoc"])
             family_ids: Optional list of family UUIDs to include
             conversation_id: Optional conversation UUID to include session docs from
+            query_type: Query classification type used to select HNSW ef_search.
+                        One of "simple", "factual", "standard", "analytical",
+                        "legal_research". Defaults to "standard".
 
         Returns:
             List of SearchResult objects
@@ -1214,7 +1230,7 @@ class VectorStore:
         columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
             "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
-            "level", "legal_references", "context_before", "context_after", "score"
+            "level", "legal_references", "context_before", "context_after", "source_origin", "score"
         ]
         sql = f"""
         SELECT
@@ -1231,6 +1247,7 @@ class VectorStore:
             c.legal_references,
             c.context_before,
             c.context_after,
+            c.source_origin,
             1 - (c.embedding <=> %s::vector) as score
         FROM {self.config.table_name} c
         {join_clause}
@@ -1242,9 +1259,12 @@ class VectorStore:
         # Build params in order: score calc embedding, filters, order embedding, limit
         final_params = [query_embedding] + filter_params + [query_embedding, top_k]
 
+        ef_search = QUERY_EF_SEARCH.get(query_type, _DEFAULT_EF_SEARCH)
+
         def _op(conn):
             with conn.cursor() as cur:
-                # hnsw.ef_search is set once per connection in _get_connection()
+                # Override connection-level ef_search for this query's transaction
+                cur.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
                 cur.execute(sql, final_params)
                 rows = cur.fetchall()
 
@@ -1270,6 +1290,7 @@ class VectorStore:
                             "context_before": row_dict["context_before"],
                             "context_after": row_dict["context_after"],
                             "original_score": float(row_dict["score"]),
+                            "source_origin": row_dict.get("source_origin"),
                         },
                         paragraph_start=row_dict.get("paragraph_start"),
                         paragraph_end=row_dict.get("paragraph_end"),
@@ -1405,7 +1426,7 @@ class VectorStore:
         kw_columns = [
             "chunk_id", "document_id", "content", "section_title", "hierarchy_path",
             "page_numbers", "paragraph_start", "paragraph_end", "original_paragraph_numbers",
-            "level", "score"
+            "level", "source_origin", "score"
         ]
         sql = f"""
         SELECT
@@ -1419,6 +1440,7 @@ class VectorStore:
             {col_prefix}paragraph_end,
             {col_prefix}original_paragraph_numbers,
             {col_prefix}level,
+            {col_prefix}source_origin,
             ts_rank(to_tsvector(%s, {col_prefix}content), websearch_to_tsquery(%s, %s)) as score
         FROM {table_ref}
         WHERE to_tsvector(%s, {col_prefix}content) @@ websearch_to_tsquery(%s, %s)
@@ -1448,7 +1470,10 @@ class VectorStore:
                     hierarchy_path=row_dict["hierarchy_path"],
                     page_numbers=row_dict["page_numbers"] or [],
                     score=float(row_dict["score"]),
-                    metadata={"level": row_dict["level"]},
+                    metadata={
+                        "level": row_dict["level"],
+                        "source_origin": row_dict.get("source_origin"),
+                    },
                     paragraph_start=row_dict.get("paragraph_start"),
                     paragraph_end=row_dict.get("paragraph_end"),
                     original_paragraph_numbers=row_dict.get("original_paragraph_numbers") or [],
@@ -1785,7 +1810,7 @@ class VectorStore:
             )
 
         placeholders = ",".join(["%s::uuid"] * len(document_ids))
-        sql = f"SELECT id, title, file_path, metadata FROM legal_documents WHERE id IN ({placeholders})"
+        sql = f"SELECT id, title, file_path, metadata, document_type FROM legal_documents WHERE id IN ({placeholders})"
         params = list(document_ids)
 
         if client_id:
@@ -1804,12 +1829,14 @@ class VectorStore:
                         "title": row["title"],
                         "file_path": row.get("file_path"),
                         "metadata": row.get("metadata") or {},
+                        "document_type": row.get("document_type"),
                     }
                 else:
                     result[str(row[0])] = {
                         "title": row[1],
                         "file_path": row[2],
                         "metadata": row[3] or {},
+                        "document_type": row[4] if len(row) > 4 else None,
                     }
             return result
 

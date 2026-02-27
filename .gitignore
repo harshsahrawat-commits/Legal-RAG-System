@@ -73,3 +73,7 @@ directives/
 
 # Database backups
 backups/
+
+# Daily session logs and progress (local only)
+daily_conversations/
+Daily_progress/
