@@ -3,12 +3,16 @@ import { Scale, Search, FileCheck, Globe, ArrowRight, ChevronRight, Loader2 } fr
 import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
 import { useStore } from '../store'
 import { api } from '../api'
+import LegalPages from './LegalPages'
 
 export default function LandingPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const setAuth = useStore((s) => s.setAuth)
+  const legalPageOpen = useStore((s) => s.legalPageOpen)
+  const setLegalPageOpen = useStore((s) => s.setLegalPageOpen)
+  const setActiveLegalTab = useStore((s) => s.setActiveLegalTab)
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -35,6 +39,15 @@ export default function LandingPage() {
 
   const scrollToCta = () => {
     document.getElementById('cta-section')?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  const openLegalPage = (tab: string) => {
+    setActiveLegalTab(tab)
+    setLegalPageOpen(true)
+  }
+
+  if (legalPageOpen) {
+    return <LegalPages />
   }
 
   /* ---------- Navbar ---------- */
@@ -371,6 +384,31 @@ export default function LandingPage() {
     color: 'var(--text-3)',
   }
 
+  const footerLinks: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 12,
+    flexWrap: 'wrap',
+  }
+
+  const footerLink: React.CSSProperties = {
+    fontSize: 13,
+    color: 'var(--text-2)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: 0,
+    textDecoration: 'underline',
+    textUnderlineOffset: '2px',
+  }
+
+  const footerDivider: React.CSSProperties = {
+    color: 'var(--text-3)',
+    fontSize: 13,
+  }
+
   /* ---------- Error display ---------- */
   const errorStyle: React.CSSProperties = {
     color: 'var(--danger)',
@@ -645,6 +683,15 @@ export default function LandingPage() {
 
       {/* ==================== FOOTER ==================== */}
       <footer style={footer}>
+        <div style={footerLinks}>
+          <button onClick={() => openLegalPage('terms')} style={footerLink}>Terms of Service</button>
+          <span style={footerDivider}>&middot;</span>
+          <button onClick={() => openLegalPage('privacy')} style={footerLink}>Privacy Policy</button>
+          <span style={footerDivider}>&middot;</span>
+          <button onClick={() => openLegalPage('gdpr')} style={footerLink}>GDPR</button>
+          <span style={footerDivider}>&middot;</span>
+          <button onClick={() => openLegalPage('liability')} style={footerLink}>Limitation of Liability</button>
+        </div>
         <p style={footerText}>&copy; 2026 Themis &middot; AI-powered legal research</p>
       </footer>
     </div>

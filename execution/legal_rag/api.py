@@ -531,6 +531,14 @@ def _clean_answer(text: str) -> str:
     return text.strip()
 
 
+# EXIT-style context compression: legal anchor terms always preserved
+_LEGAL_ANCHOR_RE = re.compile(
+    r'(?i)(article|section|law\s+no|§|held\s+that|the\s+court|violation|annul|'
+    r'dismiss|upheld|found\s+that|it\s+was\s+decided|αποφ[αά]σ|παραβ[ιί]αση|'
+    r'ακ[υύ]ρ[ωώ]|νόμος|άρθρο)'
+)
+
+
 def _strip_advisory_language(text: str, lang: str = "en") -> str:
     """Post-process LLM output to replace advisory language with neutral phrasing.
 
@@ -548,6 +556,71 @@ def _strip_advisory_language(text: str, lang: str = "en") -> str:
             logger.warning(f"Prohibited advisory language detected: {pattern}")
 
     return cleaned
+
+
+def _compress_cited_contents(
+    cited_contents: list,
+    query: str,
+    max_sentences_per_chunk: int = 6,
+    min_results_to_activate: int = 8,
+) -> list:
+    """EXIT-style extractive context compression for LLM input.
+
+    Reduces LLM context by keeping only the most relevant sentences per chunk.
+    Scoring: query term overlap (x2), bookend first/last (+3), legal anchor (+2), position <3 (+1).
+    Only activates when result count > min_results_to_activate.
+    Returns new CitedContent objects; originals are not mutated.
+    """
+    if len(cited_contents) <= min_results_to_activate:
+        return cited_contents
+
+    from dataclasses import replace as _dc_replace
+
+    query_terms = set(re.findall(r'\w+', query.lower()))
+    query_terms = {t for t in query_terms if len(t) > 2}  # Skip short stopwords
+
+    compressed = []
+    total_original = 0
+    total_kept = 0
+
+    for cc in cited_contents:
+        # Split into sentences (handle legal abbreviations like "Art.", "No.", "v.")
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-ZΑ-Ω\[(])', cc.content)
+        if len(sentences) <= 1:
+            sentences = re.split(r'(?<=[.!?])\s+', cc.content)
+
+        total_original += len(sentences)
+
+        if len(sentences) <= max_sentences_per_chunk:
+            compressed.append(cc)
+            total_kept += len(sentences)
+            continue
+
+        scored = []
+        for i, sent in enumerate(sentences):
+            words = set(re.findall(r'\w+', sent.lower()))
+            query_overlap = len(query_terms & words) * 2
+            is_bookend = 3 if (i == 0 or i == len(sentences) - 1) else 0
+            has_legal_ref = 2 if _LEGAL_ANCHOR_RE.search(sent) else 0
+            position_boost = 1 if i < 3 else 0
+            score = query_overlap + is_bookend + has_legal_ref + position_boost
+            scored.append((score, i, sent))
+
+        scored.sort(key=lambda x: -x[0])
+        kept = sorted(scored[:max_sentences_per_chunk], key=lambda x: x[1])
+        compressed_text = ' '.join(s[2] for s in kept)
+        total_kept += len(kept)
+
+        compressed.append(_dc_replace(cc, content=compressed_text))
+
+    if total_original > 0:
+        ratio = total_kept / total_original
+        logger.info(
+            f"Context compression: {total_original} sentences -> "
+            f"{total_kept} kept ({ratio:.0%}), {len(cited_contents)} chunks"
+        )
+
+    return compressed
 
 
 # =============================================================================
@@ -839,8 +912,11 @@ def query_documents(
     # Classify query for context formatting (section headers in legal research)
     query_type = retriever._classify_query(request.query, query_lang)
 
+    # Compress context for LLM (EXIT-style extractive compression)
+    compressed_contents = _compress_cited_contents(cited_contents, request.query)
+
     # Build LLM context
-    context = _build_context_string(cited_contents, all_sources, query_type=query_type)
+    context = _build_context_string(compressed_contents, all_sources, query_type=query_type)
     try:
         llm_client = _container.get_llm_client()
         system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
@@ -1077,8 +1153,11 @@ def query_documents_stream(
                     },
                 )
 
+            # Compress context for LLM (EXIT-style extractive compression)
+            compressed_contents = _compress_cited_contents(cited_contents, request.query)
+
             # Build LLM context
-            context = _build_context_string(cited_contents, all_sources, query_type=query_type)
+            context = _build_context_string(compressed_contents, all_sources, query_type=query_type)
             full_answer = ""
             try:
                 llm_client = _container.get_llm_client()

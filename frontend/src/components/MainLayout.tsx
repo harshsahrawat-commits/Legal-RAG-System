@@ -3,11 +3,13 @@ import Header from './Header'
 import Sidebar from './Sidebar'
 import ChatInterface from './ChatInterface'
 import SettingsPage from './SettingsPage'
+import LegalPages from './LegalPages'
 import { useStore } from '../store'
 import { api } from '../api'
 
 export default function MainLayout() {
   const settingsOpen = useStore((s) => s.settingsOpen)
+  const legalPageOpen = useStore((s) => s.legalPageOpen)
   const setFamilies = useStore((s) => s.setFamilies)
 
   // Load families on mount
@@ -17,12 +19,18 @@ export default function MainLayout() {
       .catch(() => {})
   }, [setFamilies])
 
+  const renderContent = () => {
+    if (legalPageOpen) return <LegalPages />
+    if (settingsOpen) return <SettingsPage />
+    return <ChatInterface />
+  }
+
   return (
     <div style={styles.layout}>
       <Sidebar />
       <div style={styles.main}>
         <Header />
-        {settingsOpen ? <SettingsPage /> : <ChatInterface />}
+        {renderContent()}
       </div>
     </div>
   )

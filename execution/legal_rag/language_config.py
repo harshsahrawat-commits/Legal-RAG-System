@@ -6,6 +6,7 @@ Each tenant can have different language settings for LLM, embeddings,
 reranking, and full-text search.
 """
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +37,7 @@ class TenantLanguageConfig:
     embedding_provider: str = "voyage"
     llm_model: str = "meta/llama-3.3-70b-instruct"
     reranker_model: str = "rerank-multilingual-v3.0"
+    reranker_provider: str = "cohere"  # "cohere" or "zerank"
     fts_language: str = "english"
     chars_per_token: int = 4
 
@@ -57,6 +59,7 @@ class TenantLanguageConfig:
                 embedding_provider="voyage",
                 llm_model="meta/llama-3.3-70b-instruct",
                 reranker_model="rerank-multilingual-v3.0",
+                reranker_provider=os.getenv("RERANKER_PROVIDER", "cohere"),
                 fts_language="greek",
                 chars_per_token=3,
             )
@@ -69,8 +72,9 @@ class TenantLanguageConfig:
             language="en",
             embedding_model="voyage-law-2",
             embedding_provider="voyage",
-            llm_model="qwen/qwen3-235b-a22b",
+            llm_model="meta/llama-3.3-70b-instruct",
             reranker_model="rerank-multilingual-v3.0",
+            reranker_provider=os.getenv("RERANKER_PROVIDER", "cohere"),
             fts_language="english",
             chars_per_token=4,
         )

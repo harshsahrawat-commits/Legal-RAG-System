@@ -7,7 +7,8 @@ Professional legal citation formatting based on source type:
 - Legislation:       [Law Title, Section/Article]
 - Generic fallback:  [Title, Section, Page N]
 
-Supports bilingual (EN/EL) labels, score normalization, and paragraph references.
+Supports bilingual (EN/EL) labels, score normalization, paragraph references,
+and cross-lingual court name normalization (Greek → English display).
 """
 
 import re
@@ -20,6 +21,48 @@ from .language_config import TenantLanguageConfig
 from .language_patterns import CITATION_SECTION_PATTERNS, LABELS
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Greek-to-English court name mapping for normalized citation display.
+# Keys are Greek court names (as they appear in metadata from cylaw/HUDOC
+# documents).  Values are the English equivalents used in citations.
+# ---------------------------------------------------------------------------
+GREEK_COURT_NAME_MAP: dict[str, str] = {
+    # Supreme / Constitutional
+    "Ανώτατο Δικαστήριο": "Supreme Court",
+    "Ανώτατο Συνταγματικό Δικαστήριο": "Supreme Constitutional Court",
+    "ανώτατο δικαστήριο": "Supreme Court",
+    "ανώτατο συνταγματικό δικαστήριο": "Supreme Constitutional Court",
+    # Constitutional
+    "Συνταγματικό Δικαστήριο": "Constitutional Court",
+    "συνταγματικό δικαστήριο": "Constitutional Court",
+    # Appeal
+    "Εφετείο": "Court of Appeal",
+    "εφετείο": "Court of Appeal",
+    "Δευτεροβάθμιο Δικαστήριο": "Court of Appeal",
+    "δευτεροβάθμιο δικαστήριο": "Court of Appeal",
+    "Διοικητικό Εφετείο": "Administrative Court of Appeal",
+    "διοικητικό εφετείο": "Administrative Court of Appeal",
+    # Administrative
+    "Διοικητικό Δικαστήριο": "Administrative Court",
+    "διοικητικό δικαστήριο": "Administrative Court",
+    # First Instance
+    "Επαρχιακό Δικαστήριο": "District Court",
+    "επαρχιακό δικαστήριο": "District Court",
+    "Πρωτοδικείο": "Court of First Instance",
+    "πρωτοδικείο": "Court of First Instance",
+    "Πρωτόδικο Δικαστήριο": "Court of First Instance",
+    "πρωτόδικο δικαστήριο": "Court of First Instance",
+    "Δικαστήριο Εργατικών Διαφορών": "Labour Disputes Court",
+    "δικαστήριο εργατικών διαφορών": "Labour Disputes Court",
+    "Οικογενειακό Δικαστήριο": "Family Court",
+    "οικογενειακό δικαστήριο": "Family Court",
+    # ECHR / CJEU (occasionally stored in Greek)
+    "ΕΔΔΑ": "ECHR",
+    "Ευρωπαϊκό Δικαστήριο Ανθρωπίνων Δικαιωμάτων": "European Court of Human Rights",
+    "ΔΕΕ": "CJEU",
+    "Δικαστήριο της Ευρωπαϊκής Ένωσης": "Court of Justice of the European Union",
+}
 
 
 @dataclass
@@ -39,6 +82,25 @@ class Citation:
     def __post_init__(self):
         if self.source_metadata is None:
             self.source_metadata = {}
+
+    def _normalize_court_name(self, court: str) -> str:
+        """Normalize a court name to English for consistent citation display.
+
+        Handles Greek court names from cylaw metadata by mapping them to
+        their English equivalents.  Returns the original string unchanged
+        if no mapping is found (i.e. it is already in English or unknown).
+        """
+        if not court:
+            return court
+        # Exact match first (covers capitalised and lowercase variants)
+        if court in GREEK_COURT_NAME_MAP:
+            return GREEK_COURT_NAME_MAP[court]
+        # Case-insensitive fallback: build a lowered lookup
+        court_lower = court.lower().strip()
+        for greek, english in GREEK_COURT_NAME_MAP.items():
+            if greek.lower() == court_lower:
+                return english
+        return court
 
     def short_format(self) -> str:
         """Short inline citation in professional legal format.
@@ -96,17 +158,24 @@ class Citation:
     # --- Professional legal citation formatters ---
 
     def _format_case_law_citation(self) -> str:
-        """Format: Title (Court, Case No., Year) [outcome]"""
+        """Format: Title (Court, Case No., Year) [outcome]
+
+        Greek court names are normalized to English for consistent display.
+        """
         meta = self.source_metadata
         parts_inner = []
 
         court = meta.get("court_level")
         if court:
-            parts_inner.append(court)
+            parts_inner.append(self._normalize_court_name(court))
 
         case_no = meta.get("case_number")
         if case_no:
-            parts_inner.append(f"Case No. {case_no}")
+            # Avoid duplicating "Case No." if already present in the value
+            if re.match(r'(?i)case\s+no', str(case_no)):
+                parts_inner.append(str(case_no))
+            else:
+                parts_inner.append(f"Case No. {case_no}")
 
         year = meta.get("year")
         if year:
@@ -152,7 +221,11 @@ class Citation:
         return f"[{citation}]"
 
     def _format_legislation_citation(self) -> str:
-        """Format: Law Title, Section/Article"""
+        """Format: Law Title, Section/Article
+
+        Handles both English and Greek article/section references
+        extracted from hierarchy paths.
+        """
         parts = [self.document_title]
 
         if self.section:
@@ -162,6 +235,11 @@ class Citation:
             extracted = self._extract_article_from_path()
             if extracted:
                 parts.append(extracted)
+
+        # Add paragraph references for precise legislation citations
+        para_str = self._format_paragraphs()
+        if para_str:
+            parts.append(para_str)
 
         return f"[{', '.join(parts)}]"
 
@@ -182,29 +260,72 @@ class Citation:
     def _format_outcome_tag(self) -> str:
         """Build a concise outcome tag from metadata.
 
-        Returns e.g. 'violation found', 'appeal dismissed', 'annulment granted', or ''.
+        Checks all outcome fields in priority order and returns a short
+        English label suitable for display in square brackets, e.g.
+        'violation found', 'no violation', 'appeal dismissed',
+        'annulment granted', 'unfair dismissal', 'abuse of discretion'.
+
+        Returns empty string when no outcome metadata is available.
         """
         meta = self.source_metadata
-        # Check fields in priority order
-        if meta.get("violation_found"):
+
+        # --- violation_found can be True *or* explicitly False ---
+        vf = meta.get("violation_found")
+        if vf is True:
             return "violation found"
+        if vf is False:
+            return "no violation"
+
+        # --- annulment ---
         if meta.get("annulment_granted"):
             return "annulment granted"
 
+        # --- appeal outcome (stored as string: "dismissed", "allowed", etc.) ---
         appeal = meta.get("appeal_outcome")
         if appeal:
-            return str(appeal)
+            appeal_str = str(appeal).strip().lower()
+            if appeal_str in ("dismissed", "rejected", "denied", "inadmissible"):
+                return "appeal dismissed"
+            if appeal_str in ("allowed", "granted", "upheld"):
+                return "appeal allowed"
+            return f"appeal {appeal_str}"
+
+        # --- appeal_dismissed (boolean flag from Phase 4 extraction) ---
+        if meta.get("appeal_dismissed"):
+            return "appeal dismissed"
+
+        # --- extended outcome types ---
+        if meta.get("abuse_of_discretion"):
+            return "abuse of discretion"
+
+        if meta.get("unfair_dismissal"):
+            return "unfair dismissal"
 
         return ""
 
     def _extract_article_from_path(self) -> str:
-        """Try to pull an article/section reference from the hierarchy path."""
+        """Try to pull an article/section reference from the hierarchy path.
+
+        Supports both English (Article/Art./Section) and Greek
+        (Άρθρο/Τμήμα/Μέρος) patterns.
+        """
         if not self.hierarchy_path:
             return ""
-        # Look for Article/Art./Section patterns in the path
-        m = re.search(r'(?:Art(?:icle)?\.?\s*(\d+[\w.]*)|Section\s*(\d+[\w.]*))', self.hierarchy_path, re.IGNORECASE)
+        # English patterns
+        m = re.search(
+            r'(?:Art(?:icle)?\.?\s*(\d+[\w.]*)|Section\s*(\d+[\w.]*))',
+            self.hierarchy_path, re.IGNORECASE,
+        )
         if m:
             num = m.group(1) or m.group(2)
+            return f"Art. {num}"
+        # Greek patterns: Άρθρο (Article), Τμήμα (Section), Μέρος (Part)
+        m = re.search(
+            r'(?:Άρθρο[_\s]+(\d+[\w.]*)|Τμήμα[_\s]+(\d+[\w.]*)|Μέρος[_\s]+([IVXLCDM]+|\d+))',
+            self.hierarchy_path,
+        )
+        if m:
+            num = m.group(1) or m.group(2) or m.group(3)
             return f"Art. {num}"
         return ""
 
@@ -495,6 +616,30 @@ if __name__ == "__main__":
         metadata={"context_before": "", "context_after": ""},
     )
 
+    # --- Greek court name case law (cylaw, court stored in Greek) ---
+    greek_case_result = SearchResult(
+        chunk_id="case-002",
+        document_id="doc-greek-case",
+        content="Το δικαστήριο αποφάσισε ότι η απόλυση ήταν παράνομη...",
+        section_title="Απόφαση",
+        hierarchy_path="Παπαδόπουλος_κατά_Δημοκρατίας/Απόφαση",
+        page_numbers=[5],
+        score=0.80,
+        metadata={"context_before": "", "context_after": ""},
+    )
+
+    # --- Case with no violation (HUDOC, explicit False) ---
+    hudoc_no_viol = SearchResult(
+        chunk_id="hudoc-002",
+        document_id="doc-hudoc-nv",
+        content="The Court finds no violation of Article 8...",
+        section_title="Judgment",
+        hierarchy_path="Smith_v_Cyprus/Judgment",
+        page_numbers=[],
+        score=0.75,
+        metadata={"context_before": "", "context_after": ""},
+    )
+
     doc_meta = {
         "doc-case": {
             "title": "Yiallourou v. Republic",
@@ -531,12 +676,38 @@ if __name__ == "__main__":
             "metadata": {"source_origin": "user"},
             "document_type": "contract",
         },
+        "doc-greek-case": {
+            "title": "Παπαδόπουλος κατά Δημοκρατίας",
+            "file_path": None,
+            "metadata": {
+                "source_origin": "cylaw",
+                "court_level": "Ανώτατο Δικαστήριο",
+                "case_number": "567/2020",
+                "year": 2021,
+                "unfair_dismissal": True,
+            },
+            "document_type": "case_law",
+        },
+        "doc-hudoc-nv": {
+            "title": "Smith v. Cyprus",
+            "file_path": None,
+            "metadata": {
+                "source_origin": "hudoc",
+                "application_number": "12345/22",
+                "year": 2023,
+                "violation_found": False,
+            },
+            "document_type": "case_law",
+        },
     }
 
     doc_titles = {did: m["title"] for did, m in doc_meta.items()}
 
     extractor = CitationExtractor(document_titles=doc_titles)
-    all_results = [case_result, hudoc_result, statute_result, generic_result]
+    all_results = [
+        case_result, hudoc_result, statute_result, generic_result,
+        greek_case_result, hudoc_no_viol,
+    ]
 
     cited_contents = extractor.extract(
         all_results, document_titles=doc_titles, doc_metadata_map=doc_meta,

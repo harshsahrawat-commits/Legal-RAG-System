@@ -340,8 +340,12 @@ class HybridRetriever:
         )
 
         # Initialize reranker if enabled
+        self._zerank_client = None
         if self.config.use_reranking:
-            self._init_reranker()
+            if self._language_config.reranker_provider == "zerank":
+                self._init_zerank_reranker()
+            else:
+                self._init_reranker()
 
     def _init_reranker(self):
         """Initialize Cohere reranker."""
@@ -358,6 +362,27 @@ class HybridRetriever:
         except ImportError:
             logger.warning("Cohere not installed. Reranking disabled.")
             self.config.use_reranking = False
+
+    def _init_zerank_reranker(self):
+        """Initialize ZeroEntropy Zerank 2 reranker."""
+        api_key = os.getenv("ZEROENTROPY_API_KEY")
+        if not api_key:
+            logger.warning("ZEROENTROPY_API_KEY not found. Falling back to Cohere.")
+            self._language_config.reranker_provider = "cohere"
+            self._init_reranker()
+            return
+        try:
+            from zeroentropy import ZeroEntropy
+            self._zerank_client = ZeroEntropy(api_key=api_key)
+            logger.info("Zerank 2 reranker initialized")
+        except ImportError:
+            logger.warning("zeroentropy package not installed. Falling back to Cohere.")
+            self._language_config.reranker_provider = "cohere"
+            self._init_reranker()
+        except Exception as e:
+            logger.warning(f"Zerank 2 init failed: {e}. Falling back to Cohere.")
+            self._language_config.reranker_provider = "cohere"
+            self._init_reranker()
 
     # Faster model for query enhancement (expansion, HyDE, multi-query).
     # These are simple generation tasks that don't need a 235B model.
@@ -1103,12 +1128,16 @@ class HybridRetriever:
         if effective_config.skip_reranking:
             logger.info("TARG gating: skipping reranking for simple query")
             final_results = fused_results[:top_k * 2]
-        elif effective_config.use_reranking and self._reranker and fused_results:
+        elif effective_config.use_reranking and (self._reranker or self._zerank_client) and fused_results:
             # Check if we can skip reranking (smart reranking for cost savings)
             if self._should_skip_reranking(fused_results):
                 final_results = fused_results[:top_k * 2]
             else:
-                reranked_results = self._rerank(query, fused_results[:top_k * 2])
+                candidates = fused_results[:top_k * 2]
+                if self._zerank_client and self._language_config.reranker_provider == "zerank":
+                    reranked_results = self._rerank_zerank(query, candidates)
+                else:
+                    reranked_results = self._rerank(query, candidates)
                 final_results = reranked_results[:top_k * 2]
         else:
             final_results = fused_results[:top_k * 2]
@@ -1593,6 +1622,58 @@ class HybridRetriever:
 
         except Exception as e:
             logger.warning(f"Reranking failed: {e}. Using original order.")
+            return results
+
+    def _rerank_zerank(self, query: str, results: list) -> list:
+        """Rerank results using ZeroEntropy Zerank 2.
+
+        Falls back to Cohere on failure, then to original order.
+        """
+        if not results:
+            return results
+
+        # Check cache first
+        chunk_ids = [r.chunk_id for r in results]
+        cache_key = self._get_rerank_cache_key(query, chunk_ids)
+        if cache_key in self._rerank_cache:
+            logger.debug("Rerank cache hit (zerank)")
+            self._rerank_cache.move_to_end(cache_key)
+            return self._rerank_cache[cache_key]
+
+        try:
+            documents = [r.content for r in results]
+            response = self._zerank_client.models.rerank(
+                model="zerank-2",
+                query=query,
+                documents=documents,
+            )
+
+            from dataclasses import replace as _replace
+            reranked = []
+            for item in response.results:
+                original = results[item.index]
+                new_metadata = {
+                    **(original.metadata or {}),
+                    "original_score": original.score,
+                    "reranker": "zerank-2",
+                    "rerank_score": item.relevance_score,
+                }
+                result = _replace(original, score=item.relevance_score, metadata=new_metadata)
+                reranked.append(result)
+
+            # Cache result (bounded LRU)
+            self._rerank_cache[cache_key] = reranked
+            while len(self._rerank_cache) > self._rerank_cache_max_size:
+                self._rerank_cache.popitem(last=False)
+            logger.debug(f"Cached zerank rerank results (cache size: {len(self._rerank_cache)})")
+
+            return reranked
+
+        except Exception as e:
+            logger.warning(f"Zerank 2 reranking failed: {e}. Falling back to Cohere.")
+            if self._reranker:
+                return self._rerank(query, results)
+            logger.warning("Cohere also unavailable. Using original order.")
             return results
 
 

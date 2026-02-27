@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Plus, MessageSquare, Trash2, Pencil, Check, X,
-  ChevronLeft, Settings, LogOut, MoreHorizontal, Loader2,
+  ChevronLeft, Settings, LogOut, MoreHorizontal, Loader2, Scale,
 } from 'lucide-react'
 import { api } from '../api'
 import { useStore } from '../store'
@@ -32,6 +32,7 @@ export default function Sidebar() {
   const user = useStore((s) => s.user)
   const logout = useStore((s) => s.logout)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
+  const setLegalPageOpen = useStore((s) => s.setLegalPageOpen)
 
   const [collapsed, setCollapsed] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -306,6 +307,9 @@ export default function Sidebar() {
           </div>
         )}
         <div style={styles.footerActions}>
+          <button onClick={() => setLegalPageOpen(true)} style={styles.footerBtn} title="Legal">
+            <Scale size={16} />
+          </button>
           <button onClick={() => setSettingsOpen(true)} style={styles.footerBtn} title="Settings">
             <Settings size={16} />
           </button>

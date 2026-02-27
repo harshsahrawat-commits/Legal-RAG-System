@@ -38,6 +38,12 @@ interface AppState {
   // Settings page visibility
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
+
+  // Legal pages visibility
+  legalPageOpen: boolean
+  activeLegalTab: string
+  setLegalPageOpen: (open: boolean) => void
+  setActiveLegalTab: (tab: string) => void
 }
 
 function loadUser(): UserInfo | null {
@@ -113,5 +119,10 @@ export const useStore = create<AppState>((set, get) => ({
   resetResearchFilters: () => set({ researchFilters: {} }),
 
   settingsOpen: false,
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsOpen: (open) => set({ settingsOpen: open, ...(open ? { legalPageOpen: false } : {}) }),
+
+  legalPageOpen: false,
+  activeLegalTab: 'terms',
+  setLegalPageOpen: (open) => set({ legalPageOpen: open, ...(open ? { settingsOpen: false } : {}) }),
+  setActiveLegalTab: (tab) => set({ activeLegalTab: tab }),
 }))
