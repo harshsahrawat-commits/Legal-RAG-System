@@ -10,7 +10,6 @@ psutil>=5.9.0            # RAM detection for Docling auto-enable
 # Embeddings & Reranking
 cohere>=5.0.0
 voyageai>=0.2.0
-zeroentropy>=0.1.0
 
 # LLM Client (NVIDIA NIM API via OpenAI-compatible client)
 openai>=1.0.0
