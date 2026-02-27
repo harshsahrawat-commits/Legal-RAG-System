@@ -1139,6 +1139,8 @@ def query_documents_stream(
 
             # Classify query to determine which prompt to use
             query_type = retriever._classify_query(request.query, query_lang)
+            if request.research_mode and query_type != "legal_research":
+                query_type = "legal_research"
 
             # Audit: log retrieval results for legal research queries
             if request.research_mode or query_type == "legal_research":

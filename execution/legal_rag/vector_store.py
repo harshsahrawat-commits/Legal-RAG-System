@@ -1183,7 +1183,7 @@ class VectorStore:
         needs_metadata_join = False
         if metadata_filters:
             if metadata_filters.get("document_type"):
-                filters.append("ld.document_type = %s")
+                filters.append("(ld.document_type = %s OR ld.document_type IS NULL)")
                 filter_params.append(metadata_filters["document_type"])
                 needs_metadata_join = True
 
@@ -1204,7 +1204,7 @@ class VectorStore:
             if metadata_filters.get("court_levels"):
                 court_levels = metadata_filters["court_levels"]
                 placeholders = ",".join(["%s"] * len(court_levels))
-                filters.append(f"ld.metadata->>'court_level' IN ({placeholders})")
+                filters.append(f"(ld.metadata->>'court_level' IN ({placeholders}) OR ld.metadata->>'court_level' IS NULL)")
                 filter_params.extend(court_levels)
                 needs_metadata_join = True
 
@@ -1379,7 +1379,7 @@ class VectorStore:
         needs_metadata_join = False
         if metadata_filters:
             if metadata_filters.get("document_type"):
-                where_extra += " AND ld.document_type = %s"
+                where_extra += " AND (ld.document_type = %s OR ld.document_type IS NULL)"
                 filter_params.append(metadata_filters["document_type"])
                 needs_metadata_join = True
 
@@ -1399,7 +1399,7 @@ class VectorStore:
             if metadata_filters.get("court_levels"):
                 court_levels = metadata_filters["court_levels"]
                 placeholders = ",".join(["%s"] * len(court_levels))
-                where_extra += f" AND ld.metadata->>'court_level' IN ({placeholders})"
+                where_extra += f" AND (ld.metadata->>'court_level' IN ({placeholders}) OR ld.metadata->>'court_level' IS NULL)"
                 filter_params.extend(court_levels)
                 needs_metadata_join = True
 
