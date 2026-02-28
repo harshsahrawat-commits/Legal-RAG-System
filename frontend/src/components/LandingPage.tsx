@@ -1,18 +1,16 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Scale, Search, FileCheck, Globe, ArrowRight, ChevronRight, Loader2 } from 'lucide-react'
 import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
 import { useStore } from '../store'
 import { api } from '../api'
-import LegalPages from './LegalPages'
 
 export default function LandingPage() {
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const setAuth = useStore((s) => s.setAuth)
-  const legalPageOpen = useStore((s) => s.legalPageOpen)
-  const setLegalPageOpen = useStore((s) => s.setLegalPageOpen)
-  const setActiveLegalTab = useStore((s) => s.setActiveLegalTab)
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -30,6 +28,7 @@ export default function LandingPage() {
     try {
       const { data } = await api.auth.google(response.credential)
       setAuth(data.token, data.user)
+      navigate('/chat')
     } catch {
       setError('Authentication failed. Please try again.')
     } finally {
@@ -42,12 +41,7 @@ export default function LandingPage() {
   }
 
   const openLegalPage = (tab: string) => {
-    setActiveLegalTab(tab)
-    setLegalPageOpen(true)
-  }
-
-  if (legalPageOpen) {
-    return <LegalPages />
+    navigate(`/legal/${tab}`)
   }
 
   /* ---------- Navbar ---------- */

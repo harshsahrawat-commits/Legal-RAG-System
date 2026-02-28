@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
-  Plus, MessageSquare, Trash2, Pencil, Check, X,
-  ChevronLeft, Settings, LogOut, MoreHorizontal, Loader2, Scale,
+  Plus, MessageSquare, Trash2, Pencil, Check, X, Search,
+  ChevronLeft, Settings, LogOut, MoreHorizontal, Scale, Download,
 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useStore } from '../store'
+import { generateExportHTML } from '../utils/exportConversation'
 import type { Conversation, ChatMessage } from '../types'
 
 function timeGroup(dateStr: string): string {
@@ -23,20 +25,18 @@ function timeGroup(dateStr: string): string {
 const GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 days', 'Older']
 
 export default function Sidebar() {
+  const navigate = useNavigate()
   const conversations = useStore((s) => s.conversations)
   const setConversations = useStore((s) => s.setConversations)
   const activeId = useStore((s) => s.activeConversationId)
   const setActiveId = useStore((s) => s.setActiveConversationId)
-  const setMessages = useStore((s) => s.setMessages)
   const clearMessages = useStore((s) => s.clearMessages)
   const user = useStore((s) => s.user)
   const logout = useStore((s) => s.logout)
-  const setSettingsOpen = useStore((s) => s.setSettingsOpen)
-  const setLegalPageOpen = useStore((s) => s.setLegalPageOpen)
 
   const [collapsed, setCollapsed] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
-  const [loadingConvId, setLoadingConvId] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -70,47 +70,31 @@ export default function Sidebar() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpenId])
 
+  const filteredConversations = useMemo(() => {
+    if (!searchQuery.trim()) return conversations
+    const q = searchQuery.toLowerCase()
+    return conversations.filter((c) => c.title.toLowerCase().includes(q))
+  }, [conversations, searchQuery])
+
   const grouped = useMemo(() => {
     const groups: Record<string, Conversation[]> = {}
-    for (const c of conversations) {
+    for (const c of filteredConversations) {
       const g = timeGroup(c.updated_at)
       if (!groups[g]) groups[g] = []
       groups[g].push(c)
     }
     return groups
-  }, [conversations])
+  }, [filteredConversations])
 
   const handleNewChat = () => {
     setActiveId(null)
     clearMessages()
+    navigate('/chat')
   }
 
-  const handleSelectConversation = async (id: string) => {
+  const handleSelectConversation = (id: string) => {
     if (id === activeId) return
-    setActiveId(id)
-    setMessages([])
-    setLoadingConvId(id)
-
-    try {
-      const { data } = await api.conversations.messages(id)
-      const msgs: ChatMessage[] = data.map((m) => ({
-        id: m.id,
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        sources: m.sources ?? undefined,
-        latency_ms: m.latency_ms ?? undefined,
-      }))
-      setMessages(msgs)
-    } catch {
-      setMessages([{
-        id: 'err',
-        role: 'assistant',
-        content: 'Failed to load conversation messages.',
-        isError: true,
-      }])
-    } finally {
-      setLoadingConvId(null)
-    }
+    navigate(`/chat/${id}`)
   }
 
   const handleDelete = async (id: string) => {
@@ -127,6 +111,7 @@ export default function Sidebar() {
       if (activeId === id) {
         setActiveId(null)
         clearMessages()
+        navigate('/chat')
       }
     } catch {
       // ignore
@@ -157,6 +142,33 @@ export default function Sidebar() {
     setRenamingId(null)
   }
 
+  const handleExport = async (id: string, title: string) => {
+    setMenuOpenId(null)
+    try {
+      let msgs: ChatMessage[]
+      if (id === activeId) {
+        msgs = useStore.getState().messages
+      } else {
+        const { data } = await api.conversations.messages(id)
+        msgs = data.map((m) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          sources: m.sources ?? undefined,
+          latency_ms: m.latency_ms ?? undefined,
+        }))
+      }
+      if (!msgs.length) return
+      const html = generateExportHTML(title, msgs)
+      const blob = new Blob([html], { type: 'text/html' })
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch {
+      // Silently fail on export errors
+    }
+  }
+
   if (collapsed) {
     return (
       <aside style={styles.collapsedSidebar}>
@@ -178,22 +190,35 @@ export default function Sidebar() {
           <Plus size={16} />
           <span>New Chat</span>
         </button>
-        <button onClick={() => setCollapsed(true)} style={styles.collapseBtn} title="Collapse sidebar">
+        <button onClick={() => { setCollapsed(true); setSearchQuery('') }} style={styles.collapseBtn} title="Collapse sidebar">
           <ChevronLeft size={16} />
         </button>
+      </div>
+
+      {/* Search bar */}
+      <div style={styles.searchBar}>
+        <Search size={14} color="var(--text-3)" style={{ flexShrink: 0 }} />
+        <input
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search conversations..."
+          style={styles.searchInput}
+        />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery('')} style={styles.searchClearBtn}>
+            <X size={14} />
+          </button>
+        )}
       </div>
 
       {/* Conversation list */}
       <div style={styles.convList}>
         {loading && <p style={styles.emptyText}>Loading...</p>}
-        {!loading && conversations.length === 0 && (
+        {!loading && conversations.length === 0 && !searchQuery && (
           <p style={styles.emptyText}>No conversations yet</p>
         )}
-        {loadingConvId && (
-          <div style={styles.convLoading}>
-            <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-            <span>Loading messages...</span>
-          </div>
+        {!loading && searchQuery && filteredConversations.length === 0 && (
+          <p style={styles.emptyText}>No conversations matching &lsquo;{searchQuery}&rsquo;</p>
         )}
 
         {GROUP_ORDER.map((group) => {
@@ -272,6 +297,12 @@ export default function Sidebar() {
                                 <Pencil size={13} /> Rename
                               </button>
                               <button
+                                style={styles.menuItem}
+                                onClick={(e) => { e.stopPropagation(); handleExport(c.id, c.title) }}
+                              >
+                                <Download size={13} /> Export
+                              </button>
+                              <button
                                 style={{ ...styles.menuItem, color: 'var(--danger)' }}
                                 onClick={(e) => { e.stopPropagation(); handleDelete(c.id) }}
                               >
@@ -307,13 +338,13 @@ export default function Sidebar() {
           </div>
         )}
         <div style={styles.footerActions}>
-          <button onClick={() => setLegalPageOpen(true)} style={styles.footerBtn} title="Legal">
+          <button onClick={() => navigate('/legal/terms')} style={styles.footerBtn} title="Legal">
             <Scale size={16} />
           </button>
-          <button onClick={() => setSettingsOpen(true)} style={styles.footerBtn} title="Settings">
+          <button onClick={() => navigate('/settings')} style={styles.footerBtn} title="Settings">
             <Settings size={16} />
           </button>
-          <button onClick={logout} style={styles.footerBtn} title="Sign out">
+          <button onClick={() => { logout(); navigate('/') }} style={styles.footerBtn} title="Sign out">
             <LogOut size={16} />
           </button>
         </div>
@@ -392,6 +423,39 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
+  },
+  searchBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    margin: '0 12px 4px',
+    padding: '6px 10px',
+    background: '#FFFFFF',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+  },
+  searchInput: {
+    flex: 1,
+    border: 'none',
+    outline: 'none',
+    fontSize: 13,
+    color: 'var(--text-1)',
+    background: 'transparent',
+    fontFamily: 'inherit',
+    padding: 0,
+  },
+  searchClearBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 20,
+    height: 20,
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-3)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   convList: {
     flex: 1,
@@ -580,13 +644,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     textAlign: 'center',
     padding: 24,
-  },
-  convLoading: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '8px 14px',
-    fontSize: 12,
-    color: 'var(--text-3)',
   },
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Scale, FileText, Shield, Users, AlertTriangle } from 'lucide-react'
 import { useStore } from '../store'
 
@@ -23,10 +24,10 @@ const TABS: Tab[] = [
 ]
 
 export default function LegalPages() {
-  const activeLegalTab = useStore((s) => s.activeLegalTab) as TabId
-  const setActiveLegalTab = useStore((s) => s.setActiveLegalTab)
-  const setLegalPageOpen = useStore((s) => s.setLegalPageOpen)
+  const { tab } = useParams<{ tab?: string }>()
+  const navigate = useNavigate()
   const isAuthenticated = useStore((s) => s.isAuthenticated)
+  const activeLegalTab = (TABS.some((t) => t.id === tab) ? tab : 'terms') as TabId
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
 
   useEffect(() => {
@@ -36,7 +37,7 @@ export default function LegalPages() {
   }, [])
 
   const handleBack = () => {
-    setLegalPageOpen(false)
+    navigate(isAuthenticated ? '/chat' : '/')
   }
 
   return (
@@ -62,21 +63,21 @@ export default function LegalPages() {
         gap: isMobile ? 4 : 0,
         padding: isMobile ? '12px 16px' : '0 32px',
       }}>
-        {TABS.map((tab) => (
+        {TABS.map((t) => (
           <button
-            key={tab.id}
-            onClick={() => setActiveLegalTab(tab.id)}
+            key={t.id}
+            onClick={() => navigate(`/legal/${t.id}`, { replace: true })}
             style={{
               ...styles.tab,
-              ...(activeLegalTab === tab.id ? styles.tabActive : {}),
+              ...(activeLegalTab === t.id ? styles.tabActive : {}),
               justifyContent: isMobile ? 'flex-start' : 'center',
               borderRadius: isMobile ? 'var(--radius-sm)' : 0,
-              borderBottom: isMobile ? 'none' : activeLegalTab === tab.id ? '2px solid var(--accent)' : '2px solid transparent',
-              background: isMobile && activeLegalTab === tab.id ? 'var(--accent-dim)' : 'transparent',
+              borderBottom: isMobile ? 'none' : activeLegalTab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
+              background: isMobile && activeLegalTab === t.id ? 'var(--accent-dim)' : 'transparent',
             }}
           >
-            {tab.icon}
-            <span>{tab.label}</span>
+            {t.icon}
+            <span>{t.label}</span>
           </button>
         ))}
       </nav>

@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Send, Loader2, MessageSquare, Sparkles, Plus, SlidersHorizontal, Search } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { Send, Loader2, MessageSquare, Sparkles, Plus, SlidersHorizontal, Search, Download } from 'lucide-react'
 import { api } from '../api'
 import ChatMessage from './ChatMessage'
 import SourceTogglePopover from './SourceTogglePopover'
 import ResearchFilters from './ResearchFilters'
 import { useStore } from '../store'
+import { generateExportHTML } from '../utils/exportConversation'
+import type { ChatMessage as ChatMessageType } from '../types'
 
 const MAX_INPUT_LENGTH = 2000
 
@@ -19,8 +22,11 @@ let _msgCounter = 0
 function nextId() { return `msg-${Date.now()}-${++_msgCounter}` }
 
 export default function ChatInterface() {
+  const { conversationId: urlConversationId } = useParams<{ conversationId?: string }>()
+  const navigate = useNavigate()
   const messages = useStore((s) => s.messages)
   const setMessages = useStore((s) => s.setMessages)
+  const clearMessages = useStore((s) => s.clearMessages)
   const sourceToggles = useStore((s) => s.sourceToggles)
   const activeConversationId = useStore((s) => s.activeConversationId)
   const setActiveConversationId = useStore((s) => s.setActiveConversationId)
@@ -48,6 +54,36 @@ export default function ChatInterface() {
       lastContentLen.current = contentLen
     }
   }, [messages])
+
+  // Sync URL params → Zustand state
+  useEffect(() => {
+    if (urlConversationId && urlConversationId !== activeConversationId) {
+      setActiveConversationId(urlConversationId)
+      setMessages([])
+      api.conversations.messages(urlConversationId)
+        .then(({ data }) => {
+          const msgs: ChatMessageType[] = data.map((m) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            sources: m.sources ?? undefined,
+            latency_ms: m.latency_ms ?? undefined,
+          }))
+          setMessages(msgs)
+        })
+        .catch(() => {
+          setMessages([{
+            id: 'err',
+            role: 'assistant',
+            content: 'Failed to load conversation messages.',
+            isError: true,
+          }])
+        })
+    } else if (!urlConversationId && activeConversationId) {
+      setActiveConversationId(null)
+      clearMessages()
+    }
+  }, [urlConversationId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const abortRef = useRef<{ abort: () => void } | null>(null)
 
@@ -89,11 +125,10 @@ export default function ChatInterface() {
           abortRef.current = null
           inputRef.current?.focus()
 
-          // Read latest state to avoid stale closure over activeConversationId
           const currentActiveId = useStore.getState().activeConversationId
           if (conversationId && !currentActiveId) {
             setActiveConversationId(conversationId)
-            // Refresh conversation list to pick up the new one
+            navigate(`/chat/${conversationId}`, { replace: true })
             api.conversations.list().then(({ data }) => setConversations(data)).catch(() => {})
           }
         },
@@ -106,10 +141,10 @@ export default function ChatInterface() {
           inputRef.current?.focus()
         },
         onConversationId: (id) => {
-          // Read latest state to avoid stale closure over activeConversationId
           const currentActiveId = useStore.getState().activeConversationId
           if (!currentActiveId) {
             setActiveConversationId(id)
+            navigate(`/chat/${id}`, { replace: true })
           }
         },
       },
@@ -122,7 +157,7 @@ export default function ChatInterface() {
     )
 
     abortRef.current = handle
-  }, [loading, setMessages, sourceToggles, activeConversationId, setActiveConversationId, setConversations, researchMode, researchFilters])
+  }, [loading, setMessages, sourceToggles, activeConversationId, setActiveConversationId, setConversations, researchMode, researchFilters, navigate])
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -155,6 +190,19 @@ export default function ChatInterface() {
   const handleSuggestionClick = (question: string) => {
     submitQuery(question)
   }
+
+  const handleExport = useCallback(() => {
+    const convId = useStore.getState().activeConversationId
+    const msgs = useStore.getState().messages
+    if (!msgs.length) return
+    const conv = useStore.getState().conversations.find((c) => c.id === convId)
+    const title = conv?.title || 'Legal Research'
+    const html = generateExportHTML(title, msgs)
+    const blob = new Blob([html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  }, [])
 
   const showUploadError = useCallback((msg: string) => {
     setUploadError(msg)
@@ -302,6 +350,18 @@ export default function ChatInterface() {
           style={styles.textarea}
           disabled={loading}
         />
+
+        {/* Export conversation */}
+        {messages.length > 0 && !loading && (
+          <button
+            type="button"
+            style={styles.iconBtn}
+            onClick={handleExport}
+            title="Export conversation"
+          >
+            <Download size={18} />
+          </button>
+        )}
 
         {/* Research mode toggle */}
         <button

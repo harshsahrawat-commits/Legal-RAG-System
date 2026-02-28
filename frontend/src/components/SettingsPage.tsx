@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Upload, Trash2, Loader2, AlertCircle, FileText, Plus, Pencil, Check, X, FolderOpen } from 'lucide-react'
 import { api } from '../api'
 import { useStore } from '../store'
@@ -11,9 +12,9 @@ const SOURCE_LABELS: Record<keyof Omit<SourceToggles, 'families'>, { label: stri
 }
 
 export default function SettingsPage() {
+  const navigate = useNavigate()
   const user = useStore((s) => s.user)
   const logout = useStore((s) => s.logout)
-  const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const sourceToggles = useStore((s) => s.sourceToggles)
   const setSourceToggle = useStore((s) => s.setSourceToggle)
   const families = useStore((s) => s.families)
@@ -180,7 +181,7 @@ export default function SettingsPage() {
     <div style={styles.container}>
       <div style={styles.inner}>
         {/* Back button */}
-        <button onClick={() => setSettingsOpen(false)} style={styles.backBtn}>
+        <button onClick={() => navigate('/chat')} style={styles.backBtn}>
           <ArrowLeft size={18} />
           <span>Back to chat</span>
         </button>
@@ -204,7 +205,7 @@ export default function SettingsPage() {
                   {user.name && <div style={styles.accountName}>{user.name}</div>}
                   <div style={styles.accountEmail}>{user.email}</div>
                 </div>
-                <button onClick={logout} style={styles.signOutBtn}>Sign Out</button>
+                <button onClick={() => { logout(); navigate('/') }} style={styles.signOutBtn}>Sign Out</button>
               </div>
             ) : null}
           </div>
