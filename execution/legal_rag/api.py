@@ -1209,7 +1209,7 @@ def query_documents_stream(
                     )
                 else:
                     system_prompt = LLM_PROMPTS.get(query_lang, LLM_PROMPTS["en"])["rag_system"]
-                    user_prompt = f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown."
+                    user_prompt = f"Based on the following sources, answer this question: {request.query}\n\nSOURCES:\n{context}\n\nWrite flowing prose paragraphs only. No lists, no headers, no asterisks, no markdown. Cite every factual claim with [N] referencing the source number."
 
                 stream = llm_client.chat.completions.create(
                     model=lang_config.llm_model,
