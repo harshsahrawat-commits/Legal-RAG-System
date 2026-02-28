@@ -27,3 +27,29 @@
 - Test all router flows in browser (deep links, back/forward, refresh)
 - Test export with real conversations (Greek content, long conversations, multiple sources)
 - Consider lazy loading for LegalPages and SettingsPage to reduce initial bundle size
+
+## Session: 2026-02-28 18:00 (Source Origin Fix + V2 Audit)
+**What was built:**
+- Fixed source origin mislabeling bug: user-uploaded documents showed "CyLaw" badges instead of user/collection badges
+  - `api.py`: Upload now writes `source_origin` into JSONB metadata; fallback uses `family_id` presence to determine origin
+  - `api_models.py`: SourceInfo default changed from `"cylaw"` to `"unknown"`
+  - `vector_store.py`: `get_document_source_meta()` now returns `family_id` from SQL
+  - `ChatMessage.tsx`: Added "user" (purple) and "session" (brown) origin badge colors
+  - `exportConversation.ts`: Added origin labels and CSS for user/session in HTML export
+- Verified document family + upload pipeline is fully functional end-to-end (families as toggles, PDF ingestion, chunking, embedding)
+
+**What broke:**
+- Source origin bug: uploaded docs defaulted to "cylaw" because `source_origin` was stored on chunks but not in document JSONB metadata, and `SourceInfo` defaulted to `"cylaw"`
+
+**Decisions made:**
+- Origin fallback logic: if `source_origin` missing from JSONB, check `family_id` presence → "user" if family exists, else "cylaw" (backward compat for pre-existing scraped docs)
+- V2 improvement plan audit: identified A3 (7-section prompt) + A1 (legislation-first) as highest-priority next items based on client feedback alignment
+
+**Open questions:**
+- V2 Phase A implementation: user hasn't confirmed whether to start A3+A1 next
+- Legacy documents uploaded before this fix still lack `source_origin` in JSONB metadata (backfill may be needed)
+
+**Next steps:**
+- Implement V2 Phase A priorities: A3 (7-section prompt tightening), A1 (legislation-first retrieval)
+- Consider backfill script for legacy document JSONB metadata (add source_origin)
+- Continue with A2 (court hierarchy), B5 (TARG gating), A4 (domain patterns)
