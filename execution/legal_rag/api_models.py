@@ -48,6 +48,10 @@ class SourceInfo(BaseModel):
     cylaw_url: Optional[str] = None
     source_origin: str = "unknown"
     external_url: Optional[str] = None
+    court_level: Optional[str] = None
+    document_type: Optional[str] = None
+    case_number: Optional[str] = None
+    outcome_tags: Optional[list[str]] = None
 
 
 class QueryResponse(BaseModel):

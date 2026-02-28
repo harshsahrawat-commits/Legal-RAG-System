@@ -153,7 +153,9 @@ export function generateExportHTML(title: string, messages: ChatMessage[]): stri
                   <tr>
                     <th>#</th>
                     <th>Origin</th>
+                    <th>Type</th>
                     <th>Title</th>
+                    <th>Court</th>
                     <th>Relevance</th>
                     <th>Citation</th>
                   </tr>
@@ -164,13 +166,27 @@ export function generateExportHTML(title: string, messages: ChatMessage[]): stri
           const relevance = src.relevance_score != null
             ? `${Math.round(src.relevance_score * 100)}%`
             : '—'
+          const docType = src.document_type
+            ? escapeHTML(src.document_type.replace('_', ' '))
+            : '—'
+          const court = src.court_level
+            ? escapeHTML(src.court_level)
+            : '—'
+          const caseNum = src.case_number
+            ? ` (${escapeHTML(src.case_number)})`
+            : ''
+          const outcomes = src.outcome_tags && src.outcome_tags.length > 0
+            ? ` [${src.outcome_tags.join(', ')}]`
+            : ''
           exchangesHTML += `
                   <tr>
                     <td>${idx + 1}</td>
                     <td><span class="origin-badge origin-${src.source_origin || 'unknown'}">${originLabel(src.source_origin)}</span></td>
-                    <td>${escapeHTML(src.document_title || '—')}</td>
+                    <td style="text-transform:capitalize">${docType}</td>
+                    <td>${escapeHTML(src.document_title || '—')}${caseNum}</td>
+                    <td>${court}</td>
                     <td>${relevance}</td>
-                    <td>${escapeHTML(src.short_citation || '—')}</td>
+                    <td>${escapeHTML(src.short_citation || '—')}${outcomes}</td>
                   </tr>`
         })
 

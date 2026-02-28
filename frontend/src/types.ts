@@ -27,8 +27,12 @@ export interface SourceInfo {
   context_before: string
   context_after: string
   cylaw_url?: string | null
-  source_origin?: 'cylaw' | 'hudoc' | 'eurlex'
+  source_origin?: 'cylaw' | 'hudoc' | 'eurlex' | 'user' | 'session' | 'unknown'
   external_url?: string | null
+  court_level?: string | null
+  document_type?: string | null
+  case_number?: string | null
+  outcome_tags?: string[] | null
 }
 
 export interface DocumentInfo {

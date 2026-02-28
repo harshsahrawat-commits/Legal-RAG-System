@@ -434,6 +434,24 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                 cylaw_url = None
                 external_url = doc_metadata.get("source_url")
 
+            # Extract court level and outcome tags from document JSONB metadata
+            court_level = doc_metadata.get("court_level")
+            case_number = doc_metadata.get("case_number")
+            doc_type = meta.get("document_type")
+
+            outcome_tags = []
+            _OUTCOME_KEYS = {
+                "violation_found": "Violation Found",
+                "annulment_granted": "Annulment Granted",
+                "abuse_of_discretion": "Abuse of Discretion",
+                "unfair_dismissal": "Unfair Dismissal",
+                "state_respondent": "State as Respondent",
+            }
+            for key, label in _OUTCOME_KEYS.items():
+                val = doc_metadata.get(key)
+                if val is True or val == "true" or val == "True":
+                    outcome_tags.append(label)
+
             sources_list.append(SourceInfo(
                 document_title=cc.citation.document_title,
                 section=cc.citation.section,
@@ -450,6 +468,10 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
                 cylaw_url=cylaw_url,
                 source_origin=origin,
                 external_url=external_url,
+                court_level=court_level,
+                document_type=doc_type,
+                case_number=case_number,
+                outcome_tags=outcome_tags if outcome_tags else None,
             ))
 
         return cited_contents, sources_list

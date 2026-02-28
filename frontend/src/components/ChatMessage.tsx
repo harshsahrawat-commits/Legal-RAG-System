@@ -70,12 +70,24 @@ function CitationBadge({
             ...(tooltipPos === 'below' ? { top: '100%', bottom: 'auto', marginTop: 6 } : {}),
           }}
         >
-          <span style={{ display: 'block', fontSize: 10, fontWeight: 600, color: colors.fg, marginBottom: 4, textTransform: 'uppercase' as const, letterSpacing: '0.05em', fontFamily: 'var(--font-mono)' }}>
-            {colors.label}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: colors.fg, textTransform: 'uppercase' as const, letterSpacing: '0.05em', fontFamily: 'var(--font-mono)' }}>
+              {colors.label}
+            </span>
+            {source.court_level && (
+              <span style={{ fontSize: 9, fontWeight: 500, color: '#92400E', background: '#FEF3C7', padding: '1px 4px', borderRadius: 2, fontFamily: 'var(--font-mono)' }}>
+                {source.court_level}
+              </span>
+            )}
           </span>
           <strong style={{ display: 'block', marginBottom: 4, color: 'var(--text-1)' }}>
             {source.section || source.document_title}
           </strong>
+          {source.case_number && (
+            <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginBottom: 3 }}>
+              {source.case_number}
+            </span>
+          )}
           <span
             style={{
               display: 'block',
@@ -134,6 +146,27 @@ const badgeStyles: Record<string, React.CSSProperties> = {
   },
 }
 
+function MicroBadge({ label, bg, fg }: { label: string; bg: string; fg: string }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '2px 6px',
+      fontSize: 9.5,
+      fontWeight: 500,
+      fontFamily: 'var(--font-mono)',
+      borderRadius: 3,
+      background: bg,
+      color: fg,
+      letterSpacing: '0.3px',
+      lineHeight: 1,
+      whiteSpace: 'nowrap' as const,
+    }}>
+      {label}
+    </span>
+  )
+}
+
 function OriginBadge({ origin }: { origin: string }) {
   const colors = SOURCE_COLORS[origin] || SOURCE_COLORS.cylaw
   return (
@@ -154,6 +187,70 @@ function OriginBadge({ origin }: { origin: string }) {
     }}>
       {colors.label}
     </span>
+  )
+}
+
+const COURT_LEVEL_COLORS: Record<string, { bg: string; fg: string }> = {
+  Supreme:        { bg: '#FEF3C7', fg: '#92400E' },
+  Constitutional: { bg: '#FEF3C7', fg: '#92400E' },
+  Appeal:         { bg: '#FEE2E2', fg: '#991B1B' },
+  Administrative: { bg: '#E0E7FF', fg: '#3730A3' },
+  'First Instance': { bg: '#F3F4F6', fg: '#374151' },
+  District:       { bg: '#F3F4F6', fg: '#374151' },
+  Labour:         { bg: '#F3F4F6', fg: '#374151' },
+  ECHR:           { bg: '#DBEAFE', fg: '#1E40AF' },
+  CJEU:           { bg: '#DBEAFE', fg: '#1E40AF' },
+}
+
+function CourtLevelBadge({ level }: { level: string }) {
+  // Try exact match first, then partial
+  let colors = COURT_LEVEL_COLORS[level]
+  if (!colors) {
+    const key = Object.keys(COURT_LEVEL_COLORS).find(
+      k => level.toLowerCase().includes(k.toLowerCase())
+    )
+    colors = key ? COURT_LEVEL_COLORS[key] : { bg: '#F3F4F6', fg: '#374151' }
+  }
+  return <MicroBadge label={level} bg={colors.bg} fg={colors.fg} />
+}
+
+const DOC_TYPE_LABELS: Record<string, string> = {
+  case_law: 'Case Law',
+  statute: 'Statute',
+  legislation: 'Legislation',
+  regulation: 'Regulation',
+  constitutional: 'Constitution',
+  contract: 'Contract',
+  brief: 'Brief',
+  memo: 'Memo',
+}
+
+function DocTypeBadge({ docType }: { docType: string }) {
+  const label = DOC_TYPE_LABELS[docType] || docType
+  const isLegislation = ['statute', 'legislation', 'regulation', 'constitutional'].includes(docType)
+  return (
+    <MicroBadge
+      label={label}
+      bg={isLegislation ? '#ECFDF5' : '#F0F9FF'}
+      fg={isLegislation ? '#065F46' : '#0C4A6E'}
+    />
+  )
+}
+
+function OutcomeTags({ tags }: { tags: string[] }) {
+  return (
+    <>
+      {tags.map(tag => (
+        <MicroBadge
+          key={tag}
+          label={tag}
+          bg={tag.includes('Violation') || tag.includes('Annulment') || tag.includes('Unfair')
+            ? '#FEF2F2' : '#FFF7ED'}
+          fg={tag.includes('Violation') || tag.includes('Annulment') || tag.includes('Unfair')
+            ? '#991B1B' : '#9A3412'}
+        />
+      ))}
+    </>
   )
 }
 
@@ -239,8 +336,9 @@ function SourceRow({
         [{index + 1}]
       </span>
 
-      {/* Col 2: Title + origin badge + short citation */}
+      {/* Col 2: Title + badges + citation + metadata */}
       <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, minWidth: 0 }}>
+        {/* Row 1: Title + origin badge */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const }}>
           {url ? (
             <a
@@ -279,7 +377,9 @@ function SourceRow({
           )}
           <OriginBadge origin={origin} />
         </div>
-        {source.short_citation && (
+
+        {/* Row 2: Short citation + case number */}
+        {(source.short_citation || source.case_number) && (
           <span style={{
             fontSize: 12.5,
             color: 'var(--text-2)',
@@ -289,7 +389,24 @@ function SourceRow({
             whiteSpace: 'nowrap' as const,
           }}>
             {source.short_citation}
+            {source.case_number && source.short_citation && ' · '}
+            {source.case_number && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+                {source.case_number}
+              </span>
+            )}
           </span>
+        )}
+
+        {/* Row 3: Metadata badges (court level, doc type, outcomes) */}
+        {(source.court_level || source.document_type || (source.outcome_tags && source.outcome_tags.length > 0)) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' as const, marginTop: 1 }}>
+            {source.document_type && <DocTypeBadge docType={source.document_type} />}
+            {source.court_level && <CourtLevelBadge level={source.court_level} />}
+            {source.outcome_tags && source.outcome_tags.length > 0 && (
+              <OutcomeTags tags={source.outcome_tags} />
+            )}
+          </div>
         )}
       </div>
 
