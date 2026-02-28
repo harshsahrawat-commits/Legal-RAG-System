@@ -402,7 +402,11 @@ def _retrieve_from_db(query, retriever, client_id, document_id, top_k,
             did = cc.citation.document_id
             meta = doc_source_meta.get(did, {})
             doc_metadata = meta.get("metadata") or {}
-            origin = doc_metadata.get("source_origin", "cylaw")
+            # Determine origin: check JSONB metadata first, then infer from family_id
+            origin = doc_metadata.get("source_origin")
+            if not origin:
+                # Legacy docs without source_origin in JSONB — infer from DB family_id
+                origin = "user" if meta.get("family_id") else "cylaw"
 
             # Determine URLs based on origin
             if origin == "cylaw":
@@ -709,7 +713,9 @@ def upload_document(
 
         # Store
         # Build outcome metadata for JSONB storage
-        outcome_metadata = {}
+        outcome_metadata = {"source_origin": source_origin}
+        if family_id:
+            outcome_metadata["family_id"] = family_id
         for key in ["court_level", "case_number", "violation_found", "annulment_granted", "appeal_outcome"]:
             val = getattr(parsed.metadata, key, None)
             if val is not None:
@@ -723,7 +729,7 @@ def upload_document(
             jurisdiction=parsed.metadata.jurisdiction,
             file_path=str(stored_path),
             page_count=parsed.metadata.page_count,
-            metadata=outcome_metadata if outcome_metadata else None,
+            metadata=outcome_metadata,
             family_id=family_id,
             upload_scope=upload_scope,
             conversation_id=conversation_id if upload_scope == "session" else None,

@@ -111,7 +111,7 @@ function escapeHTML(str: string): string {
 
 function originLabel(origin?: string | null): string {
   if (!origin) return 'Unknown'
-  const map: Record<string, string> = { cylaw: 'CyLaw', hudoc: 'HUDOC', eurlex: 'EUR-Lex' }
+  const map: Record<string, string> = { cylaw: 'CyLaw', hudoc: 'HUDOC', eurlex: 'EUR-Lex', user: 'My Docs', session: 'Upload' }
   return map[origin] || origin
 }
 
@@ -363,6 +363,8 @@ export function generateExportHTML(title: string, messages: ChatMessage[]): stri
   .origin-cylaw { background: #e0f2fe; color: #0369a1; }
   .origin-hudoc { background: #fef3c7; color: #92400e; }
   .origin-eurlex { background: #dbeafe; color: #1e40af; }
+  .origin-user { background: #f0e6f5; color: #6e3a8c; }
+  .origin-session { background: #f5ede6; color: #8c5a3a; }
   .origin-unknown { background: #f3f4f6; color: #6b7280; }
 
   .latency {

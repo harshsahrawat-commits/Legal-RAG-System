@@ -46,7 +46,7 @@ class SourceInfo(BaseModel):
     context_before: Optional[str] = ""
     context_after: Optional[str] = ""
     cylaw_url: Optional[str] = None
-    source_origin: str = "cylaw"
+    source_origin: str = "unknown"
     external_url: Optional[str] = None
 
 

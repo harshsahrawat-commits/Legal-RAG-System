@@ -1810,7 +1810,7 @@ class VectorStore:
             )
 
         placeholders = ",".join(["%s::uuid"] * len(document_ids))
-        sql = f"SELECT id, title, file_path, metadata, document_type FROM legal_documents WHERE id IN ({placeholders})"
+        sql = f"SELECT id, title, file_path, metadata, document_type, family_id FROM legal_documents WHERE id IN ({placeholders})"
         params = list(document_ids)
 
         if client_id:
@@ -1830,6 +1830,7 @@ class VectorStore:
                         "file_path": row.get("file_path"),
                         "metadata": row.get("metadata") or {},
                         "document_type": row.get("document_type"),
+                        "family_id": str(row["family_id"]) if row.get("family_id") else None,
                     }
                 else:
                     result[str(row[0])] = {
@@ -1837,6 +1838,7 @@ class VectorStore:
                         "file_path": row[2],
                         "metadata": row[3] or {},
                         "document_type": row[4] if len(row) > 4 else None,
+                        "family_id": str(row[5]) if len(row) > 5 and row[5] else None,
                     }
             return result
 

@@ -14,6 +14,8 @@ const SOURCE_COLORS: Record<string, { bg: string; fg: string; label: string }> =
   cylaw: { bg: 'var(--badge-cylaw-bg, #EBF0F7)', fg: 'var(--badge-cylaw-fg, #3A5A8C)', label: 'CyLaw' },
   hudoc: { bg: 'var(--badge-echr-bg, #E6F5F2)', fg: 'var(--badge-echr-fg, #0A7B6E)', label: 'ECHR' },
   eurlex: { bg: 'var(--badge-eurlex-bg, #F5F0E6)', fg: 'var(--badge-eurlex-fg, #8C7A3A)', label: 'EU Law' },
+  user: { bg: '#F0E6F5', fg: '#6E3A8C', label: 'My Docs' },
+  session: { bg: '#F5EDE6', fg: '#8C5A3A', label: 'Upload' },
 }
 
 function CitationBadge({
